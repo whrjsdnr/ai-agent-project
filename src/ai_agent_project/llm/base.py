@@ -1,8 +1,8 @@
 """Interfaces shared by LLM provider implementations."""
 
-from typing import Protocol
+from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ai_agent_project.agent.state import AgentMessage, ToolCall
 from ai_agent_project.tools.base import ToolDefinition
@@ -13,6 +13,7 @@ class LLMResponse(BaseModel):
 
     final_answer: str | None = None
     tool_call: ToolCall | None = None
+    provider_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class LLMClient(Protocol):

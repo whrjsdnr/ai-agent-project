@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.state import AgentState, AgentStatus
-from ai_agent_project.llm.base import LLMResponse
+from ai_agent_project.llm.providers.openai import OpenAIClient
+from ai_agent_project.tools.calculator import CalculatorTool
 from ai_agent_project.tools.registry import ToolRegistry
 
 
@@ -36,19 +37,17 @@ class AgentRunResponse(BaseModel):
         )
 
 
-class UnconfiguredLLMClient:
-    """Default client that reports a missing LLM provider configuration."""
-
-    def complete(self, messages: list[object], tools: list[object]) -> LLMResponse:
-        """Explain why a default app cannot execute an agent run yet."""
-        del messages, tools
-        raise RuntimeError("No LLM client is configured")
+def create_default_agent_service() -> AgentService:
+    """Build the default agent with the OpenAI provider and calculator tool."""
+    registry = ToolRegistry()
+    registry.register(CalculatorTool())
+    return AgentService(OpenAIClient(), registry)
 
 
 def create_app(agent_service: AgentService | None = None) -> FastAPI:
     """Create the FastAPI application, optionally with an injected agent."""
     if agent_service is None:
-        agent_service = AgentService(UnconfiguredLLMClient(), ToolRegistry())
+        agent_service = create_default_agent_service()
 
     app = FastAPI(title="AI Agent Project")
 

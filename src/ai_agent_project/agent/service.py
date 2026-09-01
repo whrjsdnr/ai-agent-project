@@ -35,7 +35,11 @@ class AgentService:
 
                 if response.final_answer is not None:
                     state.messages.append(
-                        AgentMessage(role="assistant", content=response.final_answer)
+                        AgentMessage(
+                            role="assistant",
+                            content=response.final_answer,
+                            provider_context=response.provider_context or None,
+                        )
                     )
                     state.final_answer = response.final_answer
                     state.status = AgentStatus.COMPLETED
@@ -51,6 +55,14 @@ class AgentService:
 
                 tool_call = response.tool_call
                 state.tool_calls.append(tool_call)
+                state.messages.append(
+                    AgentMessage(
+                        role="assistant",
+                        content="",
+                        tool_call=tool_call,
+                        provider_context=response.provider_context or None,
+                    )
+                )
                 tool = self._tool_registry.get(tool_call.name)
                 tool_result = tool.execute(tool_call.arguments)
                 state.messages.append(

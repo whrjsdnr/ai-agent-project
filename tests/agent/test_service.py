@@ -39,6 +39,18 @@ def test_agent_completes_with_a_final_answer() -> None:
     assert state.tool_calls == []
 
 
+def test_agent_preserves_provider_context_for_a_final_answer() -> None:
+    context = {"output_items": [{"type": "message", "id": "msg_123"}]}
+    service = AgentService(
+        FakeLLMClient([LLMResponse(final_answer="Hello", provider_context=context)]),
+        make_registry(),
+    )
+
+    state = service.run("Say hello")
+
+    assert state.messages[-1].provider_context == context
+
+
 def test_agent_executes_tool_then_completes() -> None:
     llm = FakeLLMClient(
         [
