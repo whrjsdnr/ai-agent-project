@@ -1,5 +1,7 @@
 """HTTP API for agent runs."""
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
@@ -7,6 +9,7 @@ from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.state import AgentState, AgentStatus
 from ai_agent_project.llm.providers.openai import OpenAIClient
 from ai_agent_project.tools.calculator import CalculatorTool
+from ai_agent_project.tools.file import FileTool
 from ai_agent_project.tools.registry import ToolRegistry
 
 
@@ -37,19 +40,29 @@ class AgentRunResponse(BaseModel):
         )
 
 
-def create_default_agent_service() -> AgentService:
-    """Build the default agent with the OpenAI provider and calculator tool."""
+def _default_workspace_root() -> Path:
+    """Return the project root containing the source tree."""
+    return Path(__file__).resolve().parents[3]
+
+
+def create_default_agent_service(workspace_root: Path | None = None) -> AgentService:
+    """Build the default agent with OpenAI, calculator, and workspace file tools."""
     registry = ToolRegistry()
     registry.register(CalculatorTool())
+    registry.register(FileTool(workspace_root or _default_workspace_root()))
     return AgentService(OpenAIClient(), registry)
 
 
-def create_app(agent_service: AgentService | None = None) -> FastAPI:
-    """Create the FastAPI application, optionally with an injected agent."""
+def create_app(
+    agent_service: AgentService | None = None,
+    workspace_root: Path | None = None,
+) -> FastAPI:
+    """Create the FastAPI app with injectable agent and default workspace root."""
     if agent_service is None:
-        agent_service = create_default_agent_service()
+        agent_service = create_default_agent_service(workspace_root)
 
     app = FastAPI(title="AI Agent Project")
+    app.state.agent_service = agent_service
 
     @app.get("/health")
     def health() -> dict[str, str]:
