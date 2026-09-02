@@ -1,40 +1,14 @@
 """Workspace-scoped execution of a small allowlist of development commands."""
 
-import shlex
 import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from ai_agent_project.command_policy import CommandPolicyError, parse_safe_command
 from ai_agent_project.tools.base import ToolDefinition, ToolResult
 
 MAX_OUTPUT_CHARS = 20_000
-SHELL_OPERATORS = ("&&", "||", ";", ">>", ">", "<", "|", "$(", "`")
-DANGEROUS_COMMANDS = frozenset(
-    {
-        "sudo",
-        "su",
-        "rm",
-        "mv",
-        "cp",
-        "chmod",
-        "chown",
-        "kill",
-        "pkill",
-        "curl",
-        "wget",
-        "ssh",
-        "scp",
-        "docker",
-        "apt",
-        "apt-get",
-        "pip",
-        "npm",
-    }
-)
-DANGEROUS_GIT_SUBCOMMANDS = frozenset(
-    {"reset", "clean", "checkout", "restore", "commit", "push", "pull"}
-)
 
 
 class ShellInput(BaseModel):
@@ -44,69 +18,9 @@ class ShellInput(BaseModel):
     timeout_seconds: int = Field(default=30, ge=1, le=300)
 
 
-class ShellCommandError(ValueError):
-    """Raised when a command falls outside the safe command policy."""
-
-
-def parse_command(command: str) -> list[str]:
-    """Parse and validate a command before it is passed to subprocess."""
-    if any(operator in command for operator in SHELL_OPERATORS):
-        raise ShellCommandError("Shell operators are not allowed")
-
-    try:
-        argv = shlex.split(command)
-    except ValueError as error:
-        raise ShellCommandError(f"Invalid command syntax: {error}") from error
-
-    if not argv:
-        raise ShellCommandError("Command must not be empty")
-    _reject_dangerous_command(argv)
-    _validate_allowlist(argv)
-    return argv
-
-
-def _reject_dangerous_command(argv: list[str]) -> None:
-    """Reject explicitly dangerous executable and Git subcommand forms."""
-    if argv[0] in DANGEROUS_COMMANDS:
-        raise ShellCommandError(f"Command is not allowed: {argv[0]}")
-    if len(argv) >= 2 and argv[0] == "git" and argv[1] in DANGEROUS_GIT_SUBCOMMANDS:
-        raise ShellCommandError(f"Git command is not allowed: git {argv[1]}")
-
-
-def _validate_allowlist(argv: list[str]) -> None:
-    """Allow only fixed command forms and safe relative-path variants."""
-    if argv in (
-        ["git", "status"],
-        ["git", "status", "--short"],
-        ["git", "diff"],
-        ["git", "diff", "--check"],
-        ["git", "log"],
-        ["git", "log", "--oneline"],
-        ["python", "--version"],
-        ["uv", "--version"],
-        ["uv", "run", "pytest"],
-        ["uv", "run", "ruff", "check", "."],
-        ["uv", "run", "ruff", "format", "--check", "."],
-    ):
-        return
-
-    if _is_relative_path_variant(argv, ["uv", "run", "pytest"]):
-        return
-    if _is_relative_path_variant(argv, ["uv", "run", "ruff", "check"]):
-        return
-
-    raise ShellCommandError("Command is not in the allowlist")
-
-
-def _is_relative_path_variant(argv: list[str], prefix: list[str]) -> bool:
-    """Return whether argv is one allowed command prefix plus one safe path."""
-    if argv[: len(prefix)] != prefix or len(argv) != len(prefix) + 1:
-        return False
-
-    path = Path(argv[-1])
-    if path.is_absolute() or ".." in path.parts:
-        raise ShellCommandError("Command paths must be relative to the workspace")
-    return True
+# Backward-compatible exports for callers that used ShellTool's original helpers.
+ShellCommandError = CommandPolicyError
+parse_command = parse_safe_command
 
 
 def _truncate_output(output: str) -> str:
@@ -132,7 +46,7 @@ class ShellTool:
         """Validate and execute an allowlisted command without a shell."""
         try:
             values = self.input_schema.model_validate(arguments)
-            argv = parse_command(values.command)
+            argv = parse_safe_command(values.command)
         except ValueError as error:
             return ToolResult(success=False, error=str(error))
 

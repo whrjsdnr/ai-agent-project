@@ -16,6 +16,7 @@ from ai_agent_project.llm.providers.openai import (
     DEFAULT_MODEL,
     OpenAIAPIClient,
 )
+from ai_agent_project.llm.providers.structured_schema import openai_strict_json_schema
 
 
 class OpenAISpecificationParser(SpecificationParser):
@@ -43,7 +44,7 @@ class OpenAISpecificationParser(SpecificationParser):
                 "format": {
                     "type": "json_schema",
                     "name": "specification",
-                    "schema": Specification.model_json_schema(),
+                    "schema": openai_strict_json_schema(Specification),
                     "strict": True,
                 }
             },

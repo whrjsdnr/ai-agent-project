@@ -114,11 +114,12 @@ def test_plan_rejects_unknown_or_uncovered_requirement_ids() -> None:
         uncovered.validate_traceability(make_specification())
 
 
-def test_plan_rejects_unsafe_validation_commands() -> None:
+@pytest.mark.parametrize("command", ["rm -rf .", "pytest -q"])
+def test_plan_rejects_unsafe_validation_commands(command: str) -> None:
     with pytest.raises(ValidationError, match="Unsafe validation command"):
         ImplementationPlan.model_validate(
             {
                 "tasks": [],
-                "validation_commands": ["rm -rf ."],
+                "validation_commands": [command],
             }
         )

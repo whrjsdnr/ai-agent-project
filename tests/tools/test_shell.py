@@ -51,6 +51,31 @@ def test_allowed_uv_commands_are_parsed(command: str, expected: list[str]) -> No
     assert parse_command(command) == expected
 
 
+def test_shell_tool_allows_the_default_planner_validation_command(
+    shell_tool: ShellTool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = args[0]
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("ai_agent_project.tools.shell.subprocess.run", run)
+
+    result = shell_tool.execute({"command": "uv run pytest"})
+
+    assert result.success is True
+    assert captured["argv"] == ["uv", "run", "pytest"]
+
+
+def test_shell_tool_rejects_plain_pytest_options(shell_tool: ShellTool) -> None:
+    result = shell_tool.execute({"command": "pytest -q"})
+
+    assert result.success is False
+    assert result.error == "Command is not in the allowlist"
+
+
 @pytest.mark.parametrize(
     ("command", "error"),
     [

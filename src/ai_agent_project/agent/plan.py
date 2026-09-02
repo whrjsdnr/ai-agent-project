@@ -5,7 +5,11 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ai_agent_project.agent.specification import Specification
-from ai_agent_project.tools.shell import ShellCommandError, parse_command
+from ai_agent_project.command_policy import (
+    CommandPolicyError,
+    parse_safe_command,
+    validation_command_instructions,
+)
 
 IMPLEMENTATION_PLANNER_INSTRUCTIONS = """Create an implementation plan from the
 provided structured specification. Return only data matching the supplied JSON schema.
@@ -14,7 +18,7 @@ supported by the source specification. Every task must reference the requirement
 implements. Use dependencies only when one task must finish before another. List files
 to inspect and files to modify separately when the source supports identifying them.
 Validation commands must use the project's safe development command allowlist.
-"""
+""" + validation_command_instructions()
 
 
 class ImplementationPlanValidationError(ValueError):
@@ -66,8 +70,8 @@ class ImplementationPlan(BaseModel):
 
         for command in self.validation_commands:
             try:
-                parse_command(command)
-            except ShellCommandError as error:
+                parse_safe_command(command)
+            except CommandPolicyError as error:
                 raise ValueError(f"Unsafe validation command {command!r}: {error}") from error
         return self
 

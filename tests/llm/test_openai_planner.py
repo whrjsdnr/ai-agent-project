@@ -74,6 +74,14 @@ def test_openai_planner_requests_structured_plan_and_preserves_traceability() ->
     assert request["text"]["format"]["name"] == "implementation_plan"
     assert request["text"]["format"]["strict"] is True
     assert "Every task must reference" in request["instructions"]
+    assert "uv run pytest" in request["instructions"]
+    assert "pytest -q" in request["instructions"]
+    schema = request["text"]["format"]["schema"]
+    task = schema["$defs"]["ImplementationTask"]
+    assert schema["required"] == list(schema["properties"])
+    assert task["required"] == list(task["properties"])
+    assert schema["additionalProperties"] is False
+    assert task["additionalProperties"] is False
 
 
 @pytest.mark.parametrize(
@@ -102,3 +110,34 @@ def test_openai_planner_rejects_malformed_or_untraceable_output(output_text: str
 
     with pytest.raises(ImplementationPlanningError):
         planner.plan(make_specification())
+
+
+@pytest.mark.parametrize(
+    ("validation_commands", "raises"),
+    [(["uv run pytest"], False), (["pytest -q"], True)],
+)
+def test_openai_planner_enforces_shared_validation_command_policy(
+    validation_commands: list[str],
+    raises: bool,
+) -> None:
+    output = {
+        "tasks": [
+            {
+                "id": "TASK-001",
+                "title": "회원가입 구현",
+                "description": "회원가입 endpoint를 구현한다.",
+                "requirement_ids": ["REQ-001"],
+            }
+        ],
+        "validation_commands": validation_commands,
+    }
+    planner = OpenAIImplementationPlanner(
+        client=FakeOpenAIAPIClient([SimpleNamespace(output_text=json.dumps(output))]),
+        model="test-model",
+    )
+
+    if raises:
+        with pytest.raises(ImplementationPlanningError, match="failed validation"):
+            planner.plan(make_specification())
+    else:
+        assert planner.plan(make_specification()).validation_commands == ["uv run pytest"]

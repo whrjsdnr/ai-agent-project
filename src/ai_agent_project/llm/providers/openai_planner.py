@@ -16,6 +16,7 @@ from ai_agent_project.llm.providers.openai import (
     DEFAULT_MODEL,
     OpenAIAPIClient,
 )
+from ai_agent_project.llm.providers.structured_schema import openai_strict_json_schema
 
 
 class ImplementationPlanningError(ValueError):
@@ -54,7 +55,7 @@ class OpenAIImplementationPlanner(ImplementationPlanner):
                 "format": {
                     "type": "json_schema",
                     "name": "implementation_plan",
-                    "schema": ImplementationPlan.model_json_schema(),
+                    "schema": openai_strict_json_schema(ImplementationPlan),
                     "strict": True,
                 }
             },

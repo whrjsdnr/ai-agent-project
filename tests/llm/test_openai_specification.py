@@ -63,6 +63,14 @@ def test_openai_parser_requests_structured_specification_and_validates_result() 
     assert request["text"]["format"]["name"] == "specification"
     assert request["text"]["format"]["strict"] is True
     assert "Do not invent functionality" in request["instructions"]
+    schema = request["text"]["format"]["schema"]
+    requirement = schema["$defs"]["Requirement"]
+    assert schema["required"] == list(schema["properties"])
+    assert requirement["required"] == list(requirement["properties"])
+    assert requirement["additionalProperties"] is False
+    assert any(
+        branch.get("type") == "null" for branch in requirement["properties"]["title"]["anyOf"]
+    )
 
 
 def test_openai_parser_assigns_stable_ids_to_missing_requirement_ids() -> None:
