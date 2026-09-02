@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 ai-agent-project = "ai_agent_project:main"
+ai-agent = "ai_agent_project.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.6,<0.13.0"]

@@ -24,6 +24,7 @@ from ai_agent_project.agent.project_application import (
     ProjectApplicationService,
     ProjectRunAlreadyExistsError,
     ProjectRunNotFoundError,
+    ProjectRunStore,
     StoredProjectRun,
 )
 from ai_agent_project.agent.project_execution import ProjectExecutionService
@@ -161,8 +162,9 @@ def create_default_project_application_service(
     workspace_root: Path | None = None,
     *,
     agent_service: AgentService | None = None,
+    store: ProjectRunStore | None = None,
 ) -> ProjectApplicationService:
-    """Compose planning, phase lifecycle, and one app-scoped in-memory store."""
+    """Compose production planning and lifecycle services with an injected store."""
     resolved_workspace_root = workspace_root or _default_workspace_root()
     phase_execution_service = PhaseExecutionService(
         agent_service or create_default_agent_service(resolved_workspace_root),
@@ -183,7 +185,7 @@ def create_default_project_application_service(
     return ProjectApplicationService(
         project_runner,
         project_execution_service,
-        InMemoryProjectRunStore(),
+        store if store is not None else InMemoryProjectRunStore(),
     )
 
 
