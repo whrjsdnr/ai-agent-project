@@ -28,3 +28,21 @@ def is_palindrome(value: str) -> bool:
     """
     # Compare the string to its reverse
     return value == reverse_string(value)
+
+
+def is_uppercase(value: str) -> bool:
+    """Return True if the given string is uppercase.
+
+    This function returns whether the cased characters in the string are
+    all uppercase. Non-cased characters (digits, punctuation, whitespace)
+    are ignored for the purpose of this check, matching the behavior of
+    str.isupper().
+
+    Args:
+        value: The string to check.
+
+    Returns:
+        True if value is uppercase, False otherwise.
+    """
+    # Leverage the built-in str.isupper which checks cased characters
+    return value.isupper()
