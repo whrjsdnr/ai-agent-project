@@ -11,8 +11,9 @@ IMPLEMENTATION_PLANNER_INSTRUCTIONS = """Create an implementation plan from the
 provided structured specification. Return only data matching the supplied JSON schema.
 Do not invent requirements, files, dependencies, or validation commands that are not
 supported by the source specification. Every task must reference the requirement IDs it
-implements. Use dependencies only when one task must finish before another. Validation
-commands must use the project's safe development command allowlist.
+implements. Use dependencies only when one task must finish before another. List files
+to inspect and files to modify separately when the source supports identifying them.
+Validation commands must use the project's safe development command allowlist.
 """
 
 
@@ -30,6 +31,8 @@ class ImplementationTask(BaseModel):
     description: str = Field(min_length=1)
     requirement_ids: list[str] = Field(min_length=1)
     depends_on: list[str] = Field(default_factory=list)
+    files_to_inspect: list[str] = Field(default_factory=list)
+    files_to_modify: list[str] = Field(default_factory=list)
     files: list[str] = Field(default_factory=list)
 
 

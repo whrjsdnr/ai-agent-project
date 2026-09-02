@@ -6,8 +6,16 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from ai_agent_project.agent.coding_service import CodingAgentService
+from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.service import AgentService
+from ai_agent_project.agent.specification import Specification
+from ai_agent_project.agent.state import AgentState, AgentStatus
 from ai_agent_project.llm.base import LLMResponse
+from ai_agent_project.llm.providers.openai_planner import OpenAIImplementationPlanner
+from ai_agent_project.llm.providers.openai_specification import (
+    OpenAISpecificationParser,
+)
 from ai_agent_project.tools.calculator import CalculatorTool
 from ai_agent_project.tools.file import FileTool
 from ai_agent_project.tools.registry import ToolRegistry
@@ -41,6 +49,19 @@ def test_default_agent_registers_calculator_file_and_shell_tools(tmp_path: Path)
     assert isinstance(service._tool_registry.get("calculator"), CalculatorTool)
     assert isinstance(service._tool_registry.get("file"), FileTool)
     assert isinstance(service._tool_registry.get("shell"), ShellTool)
+
+
+def test_default_coding_agent_composes_openai_parser_planner_and_agent(
+    tmp_path: Path,
+) -> None:
+    from ai_agent_project.api.app import create_default_coding_agent_service
+
+    service = create_default_coding_agent_service(workspace_root=tmp_path)
+
+    assert isinstance(service._specification_parser, OpenAISpecificationParser)
+    assert isinstance(service._planner, OpenAIImplementationPlanner)
+    assert isinstance(service._agent_service._tool_registry.get("file"), FileTool)
+    assert isinstance(service._agent_service._tool_registry.get("shell"), ShellTool)
 
 
 def test_create_app_injects_workspace_root_for_file_tool(tmp_path: Path) -> None:
@@ -103,3 +124,61 @@ def test_agent_run_endpoint() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
     assert response.json()["final_answer"] == "API response"
+
+
+def test_coding_run_endpoint_uses_injected_orchestration_dependencies() -> None:
+    from ai_agent_project.api.app import create_app
+
+    specification = Specification.model_validate(
+        {
+            "requirements": [
+                {"id": "REQ-001", "description": "Return a greeting."},
+            ]
+        }
+    )
+    plan = ImplementationPlan.model_validate(
+        {
+            "tasks": [
+                {
+                    "id": "TASK-001",
+                    "title": "Implement greeting",
+                    "description": "Add the endpoint.",
+                    "requirement_ids": ["REQ-001"],
+                }
+            ]
+        }
+    )
+
+    class FakeParser:
+        def parse(self, text: str) -> Specification:
+            assert text == "greeting requirements"
+            return specification
+
+    class FakePlanner:
+        def plan(self, parsed: Specification) -> ImplementationPlan:
+            assert parsed is specification
+            return plan
+
+    class FakeCodingAgent:
+        def run(self, instruction: str) -> AgentState:
+            assert "REQ-001" in instruction
+            assert "TASK-001" in instruction
+            return AgentState(status=AgentStatus.COMPLETED, final_answer="Implemented")
+
+    coding_service = CodingAgentService(
+        FakeParser(),
+        FakePlanner(),
+        FakeCodingAgent(),  # type: ignore[arg-type]
+    )
+    client = TestClient(create_app(coding_agent_service=coding_service))
+
+    response = client.post(
+        "/v1/coding-runs",
+        json={"specification": "greeting requirements"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["specification"]["requirements"][0]["id"] == "REQ-001"
+    assert response.json()["plan"]["tasks"][0]["id"] == "TASK-001"
+    assert response.json()["agent_run"]["final_answer"] == "Implemented"
