@@ -10,6 +10,7 @@ from ai_agent_project.agent.acceptance import (
 from ai_agent_project.agent.coding_service import (
     CodingAgentService,
     build_coding_instruction,
+    build_repair_instruction,
 )
 from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.specification import Specification
@@ -133,6 +134,46 @@ class FakeAcceptanceValidator:
         )
 
 
+class SequenceAgent:
+    def __init__(self, states: list[AgentState]) -> None:
+        self.states = states
+        self.instructions: list[str] = []
+
+    def run(self, instruction: str) -> AgentState:
+        self.instructions.append(instruction)
+        return self.states.pop(0)
+
+
+class SequenceValidator:
+    def __init__(self, reports: list[AcceptanceReport]) -> None:
+        self.reports = reports
+        self.calls = 0
+
+    def validate(self, *args: object) -> AcceptanceReport:
+        del args
+        self.calls += 1
+        return self.reports.pop(0)
+
+
+def acceptance(status: AcceptanceStatus, requirement_id: str = "REQ-001") -> AcceptanceReport:
+    return AcceptanceReport(
+        requirements=[
+            RequirementValidationResult(
+                requirement_id=requirement_id,
+                status=status,
+                criteria=[
+                    {
+                        "criterion": "All tests must pass.",
+                        "status": status,
+                        "evidence": ["Validation command failed: uv run pytest"],
+                    }
+                ],
+                evidence=["Validation command failed: uv run pytest"],
+            )
+        ]
+    )
+
+
 def test_coding_service_orchestrates_parse_plan_and_agent_run() -> None:
     calls: list[str] = []
     specification = make_specification()
@@ -224,3 +265,111 @@ def test_agent_failure_preserves_specification_and_plan() -> None:
     assert result.plan is plan
     assert result.agent_run.status is AgentStatus.FAILED
     assert result.agent_run.error == "validation failed"
+
+
+@pytest.mark.parametrize(
+    ("reports", "max_repairs", "runs", "history", "final_status"),
+    [
+        ([acceptance(AcceptanceStatus.PASSED)], 2, 1, 0, AcceptanceStatus.PASSED),
+        ([acceptance(AcceptanceStatus.UNKNOWN)], 2, 1, 0, AcceptanceStatus.UNKNOWN),
+        (
+            [acceptance(AcceptanceStatus.FAILED), acceptance(AcceptanceStatus.PASSED)],
+            2,
+            2,
+            1,
+            AcceptanceStatus.PASSED,
+        ),
+        (
+            [acceptance(AcceptanceStatus.FAILED), acceptance(AcceptanceStatus.UNKNOWN)],
+            2,
+            2,
+            1,
+            AcceptanceStatus.UNKNOWN,
+        ),
+        (
+            [
+                acceptance(AcceptanceStatus.FAILED),
+                acceptance(AcceptanceStatus.FAILED),
+                acceptance(AcceptanceStatus.PASSED),
+            ],
+            2,
+            3,
+            2,
+            AcceptanceStatus.PASSED,
+        ),
+        (
+            [
+                acceptance(AcceptanceStatus.FAILED),
+                acceptance(AcceptanceStatus.FAILED),
+                acceptance(AcceptanceStatus.FAILED),
+            ],
+            2,
+            3,
+            2,
+            AcceptanceStatus.FAILED,
+        ),
+        ([acceptance(AcceptanceStatus.FAILED)], 0, 1, 0, AcceptanceStatus.FAILED),
+    ],
+)
+def test_repair_loop_runs_only_for_failed_requirements(
+    reports: list[AcceptanceReport],
+    max_repairs: int,
+    runs: int,
+    history: int,
+    final_status: AcceptanceStatus,
+) -> None:
+    agent = SequenceAgent([AgentState(status=AgentStatus.COMPLETED) for _ in range(runs)])
+    validator = SequenceValidator(reports)
+    service = CodingAgentService(
+        FakeParser(make_specification(), []),
+        FakePlanner(make_plan(), []),
+        agent,  # type: ignore[arg-type]
+        validator,
+        max_repair_attempts=max_repairs,
+    )
+
+    result = service.run_from_specification("requirements")
+
+    assert len(agent.instructions) == runs
+    assert len(result.repair_attempts) == history
+    assert result.acceptance_report.status is final_status
+
+
+def test_repair_prompt_uses_only_failed_requirement_evidence() -> None:
+    report = AcceptanceReport(
+        requirements=[
+            RequirementValidationResult(requirement_id="REQ-001", status=AcceptanceStatus.PASSED),
+            RequirementValidationResult(
+                requirement_id="REQ-002",
+                status=AcceptanceStatus.FAILED,
+                criteria=[
+                    {
+                        "criterion": "All tests must pass.",
+                        "status": AcceptanceStatus.FAILED,
+                        "evidence": ["pytest failed"],
+                    }
+                ],
+                evidence=["Validation command failed: uv run pytest"],
+            ),
+            RequirementValidationResult(requirement_id="REQ-003", status=AcceptanceStatus.UNKNOWN),
+        ]
+    )
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-002", "description": "Fix it."}]}
+    )
+    plan = ImplementationPlan.model_validate(
+        {"tasks": [{"id": "TASK-2", "title": "fix", "description": "fix", "requirement_ids": ["REQ-002"], "files_to_modify": ["src/a.py"]}], "validation_commands": ["uv run pytest"]}
+    )
+
+    prompt = build_repair_instruction(specification, plan, report, 1)
+
+    assert "REQ-002" in prompt and "REQ-001" not in prompt and "REQ-003" not in prompt
+    assert "All tests must pass." in prompt
+    assert "Validation command failed: uv run pytest" in prompt
+    assert "UNKNOWN acceptance criteria are not failures" in prompt
+    assert "uv run pytest" in prompt
+
+
+def test_negative_repair_limit_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max_repair_attempts"):
+        CodingAgentService(FakeParser(make_specification(), []), FakePlanner(make_plan(), []), FakeAgentService(AgentState(), []), max_repair_attempts=-1)  # type: ignore[arg-type]

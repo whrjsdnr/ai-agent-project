@@ -208,3 +208,4 @@ def test_coding_run_endpoint_uses_injected_orchestration_dependencies() -> None:
     assert response.json()["plan"]["tasks"][0]["id"] == "TASK-001"
     assert response.json()["agent_run"]["final_answer"] == "Implemented"
     assert response.json()["acceptance_report"]["status"] == "passed"
+    assert response.json()["repair_attempts"] == []

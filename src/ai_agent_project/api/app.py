@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field
 
 from ai_agent_project.agent.acceptance import AcceptanceReport
 from ai_agent_project.agent.acceptance_validator import AcceptanceValidator
-from ai_agent_project.agent.coding_service import CodingAgentService, CodingRunResult
+from ai_agent_project.agent.coding_service import (
+    CodingAgentService,
+    CodingRunResult,
+    RepairAttempt,
+)
 from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
@@ -65,6 +69,7 @@ class CodingRunResponse(BaseModel):
     plan: ImplementationPlan
     agent_run: AgentRunResponse
     acceptance_report: AcceptanceReport
+    repair_attempts: list[RepairAttempt]
 
     @classmethod
     def from_result(cls, result: CodingRunResult) -> "CodingRunResponse":
@@ -75,6 +80,7 @@ class CodingRunResponse(BaseModel):
             plan=result.plan,
             agent_run=AgentRunResponse.from_state(result.agent_run),
             acceptance_report=result.acceptance_report,
+            repair_attempts=result.repair_attempts,
         )
 
 
