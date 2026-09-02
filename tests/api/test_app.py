@@ -209,3 +209,125 @@ def test_coding_run_endpoint_uses_injected_orchestration_dependencies() -> None:
     assert response.json()["agent_run"]["final_answer"] == "Implemented"
     assert response.json()["acceptance_report"]["status"] == "passed"
     assert response.json()["repair_attempts"] == []
+
+
+def test_coding_run_endpoint_records_a_repair_attempt_from_validator_evidence() -> None:
+    from ai_agent_project.api.app import create_app
+
+    specification = Specification.model_validate(
+        {
+            "requirements": [
+                {
+                    "id": "REQ-002",
+                    "description": "Add palindrome support.",
+                    "acceptance_criteria": ["All tests must pass."],
+                }
+            ]
+        }
+    )
+    plan = ImplementationPlan.model_validate(
+        {
+            "tasks": [
+                {
+                    "id": "TASK-002",
+                    "title": "Implement palindrome support",
+                    "description": "Add the helper and tests.",
+                    "requirement_ids": ["REQ-002"],
+                    "files_to_inspect": ["src/ai_agent_project/string_utils.py"],
+                    "files_to_modify": ["tests/test_string_utils.py"],
+                }
+            ],
+            "validation_commands": ["uv run pytest"],
+        }
+    )
+
+    class FakeParser:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def parse(self, text: str) -> Specification:
+            assert text == "palindrome requirements"
+            self.calls += 1
+            return specification
+
+    class FakePlanner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def plan(self, parsed: Specification) -> ImplementationPlan:
+            assert parsed is specification
+            self.calls += 1
+            return plan
+
+    class FakeCodingAgent:
+        def __init__(self) -> None:
+            self.instructions: list[str] = []
+
+        def run(self, instruction: str) -> AgentState:
+            self.instructions.append(instruction)
+            return AgentState(status=AgentStatus.COMPLETED, final_answer="done")
+
+    class FaultInjectingAcceptanceValidator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def validate(self, *args: object) -> AcceptanceReport:
+            del args
+            self.calls += 1
+            if self.calls == 1:
+                return AcceptanceReport(
+                    requirements=[
+                        RequirementValidationResult(
+                            requirement_id="REQ-002",
+                            status=AcceptanceStatus.FAILED,
+                            criteria=[
+                                {
+                                    "criterion": "All tests must pass.",
+                                    "status": AcceptanceStatus.FAILED,
+                                    "evidence": ["pytest failed"],
+                                }
+                            ],
+                            evidence=["Validation command failed: uv run pytest"],
+                        )
+                    ]
+                )
+            return AcceptanceReport(
+                requirements=[
+                    RequirementValidationResult(
+                        requirement_id="REQ-002",
+                        status=AcceptanceStatus.PASSED,
+                    )
+                ]
+            )
+
+    parser = FakeParser()
+    planner = FakePlanner()
+    agent = FakeCodingAgent()
+    validator = FaultInjectingAcceptanceValidator()
+    coding_service = CodingAgentService(
+        parser,
+        planner,
+        agent,  # type: ignore[arg-type]
+        validator,
+    )
+    client = TestClient(create_app(coding_agent_service=coding_service))
+
+    response = client.post(
+        "/v1/coding-runs",
+        json={"specification": "palindrome requirements"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert parser.calls == 1
+    assert planner.calls == 1
+    assert len(agent.instructions) == 2
+    assert validator.calls == 2
+    assert len(body["repair_attempts"]) == 1
+    assert body["repair_attempts"][0]["attempt"] == 1
+    assert body["repair_attempts"][0]["failed_requirement_ids"] == ["REQ-002"]
+    assert "REQ-002" in agent.instructions[1]
+    assert "All tests must pass." in agent.instructions[1]
+    assert "Validation command failed: uv run pytest" in agent.instructions[1]
+    assert "uv run pytest" in agent.instructions[1]
+    assert body["acceptance_report"]["status"] == "passed"
