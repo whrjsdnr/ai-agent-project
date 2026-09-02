@@ -30,8 +30,7 @@ def _allows_null(schema: dict[str, Any]) -> bool:
         return True
     branches = schema.get("anyOf")
     return isinstance(branches, list) and any(
-        isinstance(branch, dict) and branch.get("type") == "null"
-        for branch in branches
+        isinstance(branch, dict) and branch.get("type") == "null" for branch in branches
     )
 
 

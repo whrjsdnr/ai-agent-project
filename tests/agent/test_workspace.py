@@ -29,7 +29,9 @@ def test_workspace_inspector_returns_safe_sorted_relative_files(tmp_path: Path) 
     assert snapshot.truncated is False
 
 
-def test_workspace_inspector_limits_files_and_rejects_invalid_root(tmp_path: Path) -> None:
+def test_workspace_inspector_limits_files_and_rejects_invalid_root(
+    tmp_path: Path,
+) -> None:
     for name in ("b.py", "a.py", "c.py"):
         (tmp_path / name).touch()
 

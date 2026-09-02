@@ -54,10 +54,13 @@ class OpenAIImplementationPlanner(ImplementationPlanner):
                         {
                             "specification": specification.model_dump(mode="json"),
                             "workspace_files": workspace.files if workspace else [],
-                            "workspace_truncated": workspace.truncated if workspace else False,
+                            "workspace_truncated": workspace.truncated
+                            if workspace
+                            else False,
                         },
                         ensure_ascii=False,
-                    ) + "\n\nExisting workspace files are the source of truth. Put relevant existing files in files_to_inspect; put files to change or create in files_to_modify. Do not use absolute paths, .. paths, or .env files.",
+                    )
+                    + "\n\nExisting workspace files are the source of truth. Put relevant existing files in files_to_inspect; put files to change or create in files_to_modify. Do not use absolute paths, .. paths, or .env files.",
                 }
             ],
             text={

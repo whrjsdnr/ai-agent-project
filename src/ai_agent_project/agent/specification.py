@@ -78,7 +78,8 @@ class Specification(BaseModel):
             canonicalize_requirement_id(raw_id) or raw_id
             for item in raw_requirements
             if isinstance(item, Requirement)
-            or isinstance(item, Mapping) and isinstance(item.get("id"), str)
+            or isinstance(item, Mapping)
+            and isinstance(item.get("id"), str)
             for raw_id in [item.id if isinstance(item, Requirement) else item["id"]]
         }
         next_number = 1

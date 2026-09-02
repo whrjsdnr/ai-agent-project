@@ -37,9 +37,7 @@ def make_specification() -> Specification:
     return Specification.model_validate(
         {
             "project_name": "회원 서비스",
-            "requirements": [
-                {"id": "REQ-001", "description": "회원가입을 제공한다."}
-            ],
+            "requirements": [{"id": "REQ-001", "description": "회원가입을 제공한다."}],
         }
     )
 
@@ -102,7 +100,9 @@ def test_openai_planner_requests_structured_plan_and_preserves_traceability() ->
         ),
     ],
 )
-def test_openai_planner_rejects_malformed_or_untraceable_output(output_text: str) -> None:
+def test_openai_planner_rejects_malformed_or_untraceable_output(
+    output_text: str,
+) -> None:
     planner = OpenAIImplementationPlanner(
         client=FakeOpenAIAPIClient([SimpleNamespace(output_text=output_text)]),
         model="test-model",
@@ -140,4 +140,6 @@ def test_openai_planner_enforces_shared_validation_command_policy(
         with pytest.raises(ImplementationPlanningError, match="failed validation"):
             planner.plan(make_specification())
     else:
-        assert planner.plan(make_specification()).validation_commands == ["uv run pytest"]
+        assert planner.plan(make_specification()).validation_commands == [
+            "uv run pytest"
+        ]

@@ -73,10 +73,14 @@ class ImplementationPlan(BaseModel):
             try:
                 parse_safe_command(command)
             except CommandPolicyError as error:
-                raise ValueError(f"Unsafe validation command {command!r}: {error}") from error
+                raise ValueError(
+                    f"Unsafe validation command {command!r}: {error}"
+                ) from error
         return self
 
-    def validate_traceability(self, specification: Specification) -> "ImplementationPlan":
+    def validate_traceability(
+        self, specification: Specification
+    ) -> "ImplementationPlan":
         """Ensure every source requirement maps to at least one valid task."""
         source_ids = {requirement.id for requirement in specification.requirements}
         referenced_ids = {

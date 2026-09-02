@@ -52,7 +52,9 @@ def test_constraints_and_explicit_assumptions_are_separate() -> None:
     )
 
     assert specification.constraints == ["Python 3.12를 사용해야 한다."]
-    assert specification.assumptions == ["이메일 서버는 외부 시스템에서 제공된다고 가정한다."]
+    assert specification.assumptions == [
+        "이메일 서버는 외부 시스템에서 제공된다고 가정한다."
+    ]
 
 
 def test_missing_requirement_ids_are_stable_and_do_not_replace_explicit_ids() -> None:

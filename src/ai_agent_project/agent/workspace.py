@@ -6,7 +6,18 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 _IGNORED_DIRECTORIES = frozenset(
-    {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", "node_modules", "dist", "build"}
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        "node_modules",
+        "dist",
+        "build",
+    }
 )
 
 
@@ -51,8 +62,12 @@ class FilesystemWorkspaceInspector:
                 continue
             if candidate.is_file():
                 paths.append(relative.as_posix())
-        return WorkspaceSnapshot(files=paths[: self._max_files], truncated=len(paths) > self._max_files)
+        return WorkspaceSnapshot(
+            files=paths[: self._max_files], truncated=len(paths) > self._max_files
+        )
 
 
 def _is_secret_env_file(path: Path) -> bool:
-    return path.name == ".env" or (path.name.startswith(".env.") and path.name != ".env.example")
+    return path.name == ".env" or (
+        path.name.startswith(".env.") and path.name != ".env.example"
+    )

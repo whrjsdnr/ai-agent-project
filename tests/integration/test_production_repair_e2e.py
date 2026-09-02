@@ -28,7 +28,9 @@ class FailOnceAcceptanceValidator:
         self._delegate = delegate
         self.call_count = 0
 
-    def validate(self, specification: object, plan: object, agent_state: object) -> AcceptanceReport:
+    def validate(
+        self, specification: object, plan: object, agent_state: object
+    ) -> AcceptanceReport:
         self.call_count += 1
         if self.call_count > 1:
             return self._delegate.validate(specification, plan, agent_state)  # type: ignore[arg-type]
@@ -42,10 +44,14 @@ class FailOnceAcceptanceValidator:
                         AcceptanceCriterionResult(
                             criterion="All tests must pass.",
                             status=AcceptanceStatus.FAILED,
-                            evidence=["Forced initial acceptance failure for repair-loop E2E validation."],
+                            evidence=[
+                                "Forced initial acceptance failure for repair-loop E2E validation."
+                            ],
                         )
                     ],
-                    evidence=["Forced initial acceptance failure for repair-loop E2E validation."],
+                    evidence=[
+                        "Forced initial acceptance failure for repair-loop E2E validation."
+                    ],
                 )
             ]
         )
@@ -84,7 +90,10 @@ Ensure is_digits_only has these acceptance criteria:
     assert result.repair_attempts[0].attempt == 1
     # The requirement id may include a human-readable title. Accept any id
     # that contains the requirement short id "REQ-REPAIR-E2E" to be robust.
-    assert any("REQ-REPAIR-E2E" in rid for rid in result.repair_attempts[0].failed_requirement_ids)
+    assert any(
+        "REQ-REPAIR-E2E" in rid
+        for rid in result.repair_attempts[0].failed_requirement_ids
+    )
     assert result.repair_attempts[0].agent_run.status.value == "completed"
     assert result.acceptance_report.status is AcceptanceStatus.PASSED
     assert validator.call_count == 2

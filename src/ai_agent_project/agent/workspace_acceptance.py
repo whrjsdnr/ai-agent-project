@@ -21,7 +21,9 @@ from ai_agent_project.tools.shell import ShellTool
 class WorkspaceAcceptanceValidator:
     """Validate planned files and safe validation commands inside one workspace."""
 
-    def __init__(self, workspace_root: Path, shell_tool: ShellTool | None = None) -> None:
+    def __init__(
+        self, workspace_root: Path, shell_tool: ShellTool | None = None
+    ) -> None:
         self._workspace_root = workspace_root.resolve()
         if not self._workspace_root.is_dir():
             raise ValueError("workspace_root must be an existing directory")
@@ -62,14 +64,18 @@ class WorkspaceAcceptanceValidator:
             try:
                 parse_safe_command(command)
             except CommandPolicyError as error:
-                evidence.append(f"Unsafe validation command rejected: {command} ({error})")
+                evidence.append(
+                    f"Unsafe validation command rejected: {command} ({error})"
+                )
                 passed = False
                 continue
             result = self._shell_tool.execute({"command": command})
             if result.success:
                 evidence.append(f"Validation command passed: {command}")
             else:
-                evidence.append(f"Validation command failed: {command} ({result.error})")
+                evidence.append(
+                    f"Validation command failed: {command} ({result.error})"
+                )
                 passed = False
         return evidence, passed
 
@@ -91,7 +97,9 @@ class WorkspaceAcceptanceValidator:
                 *task.files,
             ]
         )
-        implemented_files, test_files, file_evidence, files_exist = self._inspect_paths(paths)
+        implemented_files, test_files, file_evidence, files_exist = self._inspect_paths(
+            paths
+        )
         evidence = [*file_evidence, *command_evidence]
         if agent_state.status is AgentStatus.FAILED:
             evidence.append(f"Agent run failed: {agent_state.error or 'unknown error'}")
@@ -129,7 +137,9 @@ class WorkspaceAcceptanceValidator:
             evidence=evidence,
         )
 
-    def _inspect_paths(self, paths: list[str]) -> tuple[list[str], list[str], list[str], bool]:
+    def _inspect_paths(
+        self, paths: list[str]
+    ) -> tuple[list[str], list[str], list[str], bool]:
         implemented: list[str] = []
         tests: list[str] = []
         evidence: list[str] = []
@@ -146,7 +156,11 @@ class WorkspaceAcceptanceValidator:
 
     def _safe_path(self, path: str) -> Path | None:
         candidate = Path(path)
-        if candidate.is_absolute() or ".." in candidate.parts or ".env" in candidate.parts:
+        if (
+            candidate.is_absolute()
+            or ".." in candidate.parts
+            or ".env" in candidate.parts
+        ):
             return None
         resolved = (self._workspace_root / candidate).resolve()
         try:
@@ -175,7 +189,9 @@ class WorkspaceAcceptanceValidator:
             return AcceptanceCriterionResult(
                 criterion=criterion,
                 status=(
-                    AcceptanceStatus.PASSED if commands_passed else AcceptanceStatus.FAILED
+                    AcceptanceStatus.PASSED
+                    if commands_passed
+                    else AcceptanceStatus.FAILED
                 ),
                 evidence=list(evidence),
             )
@@ -196,7 +212,8 @@ class WorkspaceAcceptanceValidator:
             matches = [
                 item
                 for item in assertions
-                if parsed is not None and _literal_same_type(item.expected, parsed.expected)
+                if parsed is not None
+                and _literal_same_type(item.expected, parsed.expected)
             ]
             if contradictions or not commands_passed:
                 status = AcceptanceStatus.FAILED
@@ -209,7 +226,10 @@ class WorkspaceAcceptanceValidator:
                 status=status,
                 evidence=[
                     *evidence,
-                    *[_format_assertion("Matched test assertion", item) for item in matches],
+                    *[
+                        _format_assertion("Matched test assertion", item)
+                        for item in matches
+                    ],
                     *[
                         _format_assertion("Contradictory test assertion", item)
                         + f"; Criterion expected: {parsed.expected!r}; Test asserts: {item.expected!r}"
@@ -314,9 +334,7 @@ class _AssertExpression:
     expected: object
 
 
-_FUNCTIONAL_CRITERION = re.compile(
-    r"^([A-Za-z_]\w*)\((.*)\)\s+returns\s+(.+)$"
-)
+_FUNCTIONAL_CRITERION = re.compile(r"^([A-Za-z_]\w*)\((.*)\)\s+returns\s+(.+)$")
 
 
 def _parse_functional_criterion(criterion: str) -> _FunctionalCriterion | None:
@@ -350,7 +368,11 @@ def _extract_assertion(expression: ast.expr) -> _AssertExpression | None:
         if isinstance(expression.operand, ast.Call):
             return _AssertExpression(expression.operand, False)
         return None
-    if not isinstance(expression, ast.Compare) or len(expression.ops) != 1 or len(expression.comparators) != 1:
+    if (
+        not isinstance(expression, ast.Compare)
+        or len(expression.ops) != 1
+        or len(expression.comparators) != 1
+    ):
         return None
     if not isinstance(expression.left, ast.Call):
         return None
@@ -358,7 +380,11 @@ def _extract_assertion(expression: ast.expr) -> _AssertExpression | None:
         return None
     try:
         comparator = expression.comparators[0]
-        expected = comparator.value if isinstance(comparator, ast.Constant) else ast.literal_eval(comparator)
+        expected = (
+            comparator.value
+            if isinstance(comparator, ast.Constant)
+            else ast.literal_eval(comparator)
+        )
     except ValueError:
         return None
     if not _is_supported_literal(expected):
@@ -375,7 +401,11 @@ def _format_assertion(prefix: str, assertion: _FunctionalAssertion) -> str:
 
 
 def _call_matches(call: ast.Call, criterion: _FunctionalCriterion) -> bool:
-    if not isinstance(call.func, ast.Name) or call.func.id != criterion.function_name or call.keywords:
+    if (
+        not isinstance(call.func, ast.Name)
+        or call.func.id != criterion.function_name
+        or call.keywords
+    ):
         return False
     try:
         return tuple(ast.literal_eval(arg) for arg in call.args) == criterion.args
