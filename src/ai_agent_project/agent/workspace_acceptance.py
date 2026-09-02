@@ -157,7 +157,7 @@ class WorkspaceAcceptanceValidator:
         test_files: list[str],
         commands_passed: bool,
         evidence: list[str],
-        functional_evidence: list[str] | None = None,
+        functional_evidence: list["_FunctionalAssertion"] | None = None,
     ) -> AcceptanceCriterionResult:
         classification = _classify_test_requirement(criterion)
         if classification == "creation":
@@ -176,19 +176,45 @@ class WorkspaceAcceptanceValidator:
                 evidence=list(evidence),
             )
         if _parse_functional_criterion(criterion) is not None:
-            if not commands_passed:
+            parsed = _parse_functional_criterion(criterion)
+            assertions = functional_evidence or []
+            contradictions = [
+                item
+                for item in assertions
+                if parsed is not None
+                and (
+                    (item.expected is None or parsed.expected is None)
+                    and item.expected is not parsed.expected
+                    or type(item.expected) is type(parsed.expected)
+                    and item.expected != parsed.expected
+                )
+            ]
+            matches = [
+                item
+                for item in assertions
+                if parsed is not None and _literal_same_type(item.expected, parsed.expected)
+            ]
+            if contradictions or not commands_passed:
                 status = AcceptanceStatus.FAILED
-            elif functional_evidence:
+            elif matches:
                 status = AcceptanceStatus.PASSED
             else:
                 status = AcceptanceStatus.UNKNOWN
             return AcceptanceCriterionResult(
                 criterion=criterion,
                 status=status,
-                evidence=[*evidence, *(functional_evidence or [])],
+                evidence=[
+                    *evidence,
+                    *[_format_assertion("Matched test assertion", item) for item in matches],
+                    *[
+                        _format_assertion("Contradictory test assertion", item)
+                        + f"; Criterion expected: {parsed.expected!r}; Test asserts: {item.expected!r}"
+                        for item in contradictions
+                    ],
+                ],
                 notes=(
                     None
-                    if functional_evidence
+                    if matches or contradictions
                     else "No matching direct test assertion was found."
                 ),
             )
@@ -204,12 +230,12 @@ class WorkspaceAcceptanceValidator:
         criterion: str,
         test_files: list[str],
         evidence: list[str],
-    ) -> list[str]:
+    ) -> list["_FunctionalAssertion"]:
         """Find direct AST assert evidence for one narrowly parsed criterion."""
         parsed = _parse_functional_criterion(criterion)
         if parsed is None:
             return []
-        matches: list[str] = []
+        matches: list[_FunctionalAssertion] = []
         for path in test_files:
             resolved = self._safe_path(path)
             if resolved is None:
@@ -220,10 +246,19 @@ class WorkspaceAcceptanceValidator:
                 evidence.append(f"Could not parse test file: {path}")
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.Assert) and _assert_matches(node.test, parsed):
-                    matches.append(
-                        f"Matched test assertion in {path}:{node.lineno}: {ast.unparse(node)}"
-                    )
+                if isinstance(node, ast.Assert):
+                    assertion = _extract_assertion(node.test)
+                    if assertion is not None and _call_matches(assertion.call, parsed):
+                        matches.append(
+                            _FunctionalAssertion(
+                                parsed.function_name,
+                                parsed.args,
+                                assertion.expected,
+                                path,
+                                node.lineno,
+                                ast.unparse(node),
+                            )
+                        )
         return matches
 
 
@@ -259,6 +294,22 @@ class _FunctionalCriterion:
     expected: object
 
 
+@dataclass(frozen=True)
+class _FunctionalAssertion:
+    function_name: str
+    args: tuple[object, ...]
+    expected: object
+    path: str
+    line: int
+    source: str
+
+
+@dataclass(frozen=True)
+class _AssertExpression:
+    call: ast.Call
+    expected: object
+
+
 _FUNCTIONAL_CRITERION = re.compile(
     r"^([A-Za-z_]\w*)\((.*)\)\s+returns\s+(.+)$"
 )
@@ -272,7 +323,8 @@ def _parse_functional_criterion(criterion: str) -> _FunctionalCriterion | None:
     try:
         raw_args = match.group(2).strip()
         args = () if not raw_args else ast.literal_eval(f"({raw_args},)")
-        expected = ast.literal_eval(match.group(3))
+        expected_text = match.group(3).strip()
+        expected = None if expected_text == "None" else ast.literal_eval(expected_text)
     except (SyntaxError, ValueError):
         return None
     if not isinstance(args, tuple) or not _is_supported_literal(expected):
@@ -286,22 +338,36 @@ def _is_supported_literal(value: object) -> bool:
     return value is None or isinstance(value, str | int | float | bool)
 
 
-def _assert_matches(expression: ast.expr, criterion: _FunctionalCriterion) -> bool:
-    """Match direct call assertions with exact function, literals, and expected value."""
+def _extract_assertion(expression: ast.expr) -> _AssertExpression | None:
+    """Extract only the supported direct assertion shapes without dataflow."""
     if isinstance(expression, ast.Call):
-        return criterion.expected is True and _call_matches(expression, criterion)
+        return _AssertExpression(expression, True)
     if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, ast.Not):
-        return criterion.expected is False and isinstance(expression.operand, ast.Call) and _call_matches(expression.operand, criterion)
+        if isinstance(expression.operand, ast.Call):
+            return _AssertExpression(expression.operand, False)
+        return None
     if not isinstance(expression, ast.Compare) or len(expression.ops) != 1 or len(expression.comparators) != 1:
-        return False
-    if not isinstance(expression.left, ast.Call) or not _call_matches(expression.left, criterion):
-        return False
+        return None
+    if not isinstance(expression.left, ast.Call):
+        return None
     if not isinstance(expression.ops[0], ast.Is | ast.Eq):
-        return False
+        return None
     try:
-        return ast.literal_eval(expression.comparators[0]) == criterion.expected
+        comparator = expression.comparators[0]
+        expected = comparator.value if isinstance(comparator, ast.Constant) else ast.literal_eval(comparator)
     except ValueError:
-        return False
+        return None
+    if not _is_supported_literal(expected):
+        return None
+    return _AssertExpression(expression.left, expected)
+
+
+def _literal_same_type(left: object, right: object) -> bool:
+    return type(left) is type(right) and left == right
+
+
+def _format_assertion(prefix: str, assertion: _FunctionalAssertion) -> str:
+    return f"{prefix} in {assertion.path}:{assertion.line}: {assertion.source}"
 
 
 def _call_matches(call: ast.Call, criterion: _FunctionalCriterion) -> bool:

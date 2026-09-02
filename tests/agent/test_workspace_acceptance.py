@@ -248,3 +248,65 @@ def test_invalid_test_syntax_is_unknown_with_evidence(tmp_path: Path) -> None:
     criterion = report.requirements[0].criteria[0]
     assert criterion.status is AcceptanceStatus.UNKNOWN
     assert "Could not parse test file: tests/test_string_utils.py" in criterion.evidence
+
+
+@pytest.mark.parametrize(
+    ("criterion", "assertion"),
+    [
+        ('is_digits_only("１２３") returns False', 'assert is_digits_only("１２３") is True'),
+        ('reverse_string("abc") returns "cba"', 'assert reverse_string("abc") == "abc"'),
+        ('is_palindrome("hello") returns False', 'assert is_palindrome("hello")'),
+        ('is_palindrome("level") returns True', 'assert not is_palindrome("level")'),
+        ('normalize("ABC") returns "abc"', 'assert normalize("ABC") == "ABC"'),
+        ('find_value("x") returns None', 'assert find_value("x") == "x"'),
+    ],
+)
+def test_functional_contradictions_fail_with_direct_evidence(
+    tmp_path: Path,
+    criterion: str,
+    assertion: str,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/string_utils.py").touch()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_string_utils.py").write_text(assertion)
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-001", "description": "feature", "acceptance_criteria": [criterion]}]}
+    )
+    report = WorkspaceAcceptanceValidator(
+        tmp_path, shell_tool=FakeShellTool(ToolResult(success=True, data={}))  # type: ignore[arg-type]
+    ).validate(specification, make_plan(), AgentState(status=AgentStatus.COMPLETED))
+
+    result = report.requirements[0].criteria[0]
+    assert result.status is AcceptanceStatus.FAILED
+    assert any("Contradictory test assertion" in item for item in result.evidence)
+
+
+def test_contradiction_precedes_matching_evidence(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/string_utils.py").touch()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_string_utils.py").write_text('assert foo("x") is True\nassert foo("x") is False')
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-001", "description": "feature", "acceptance_criteria": ['foo("x") returns True']}]}
+    )
+    report = WorkspaceAcceptanceValidator(
+        tmp_path, shell_tool=FakeShellTool(ToolResult(success=True, data={}))  # type: ignore[arg-type]
+    ).validate(specification, make_plan(), AgentState(status=AgentStatus.COMPLETED))
+
+    assert report.requirements[0].criteria[0].status is AcceptanceStatus.FAILED
+
+
+def test_bool_and_int_do_not_match_or_contradict(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/string_utils.py").touch()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_string_utils.py").write_text("assert foo() == 1")
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-001", "description": "feature", "acceptance_criteria": ["foo() returns True"]}]}
+    )
+    report = WorkspaceAcceptanceValidator(
+        tmp_path, shell_tool=FakeShellTool(ToolResult(success=True, data={}))  # type: ignore[arg-type]
+    ).validate(specification, make_plan(), AgentState(status=AgentStatus.COMPLETED))
+
+    assert report.requirements[0].criteria[0].status is AcceptanceStatus.UNKNOWN
