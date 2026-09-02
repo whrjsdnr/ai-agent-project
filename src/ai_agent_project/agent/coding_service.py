@@ -57,7 +57,9 @@ class CodingAgentService:
         self._specification_parser = specification_parser
         self._planner = planner
         self._agent_service = agent_service
-        self._acceptance_validator = acceptance_validator or UnconfiguredAcceptanceValidator()
+        self._acceptance_validator = (
+            acceptance_validator or UnconfiguredAcceptanceValidator()
+        )
         if max_repair_attempts < 0:
             raise ValueError("max_repair_attempts must be zero or greater")
         self._max_repair_attempts = max_repair_attempts
@@ -71,12 +73,7 @@ class CodingAgentService:
             if self._workspace_inspector is not None
             else WorkspaceSnapshot()
         )
-        try:
-            plan = self._planner.plan(specification, workspace)
-        except TypeError as error:
-            if "positional" not in str(error):
-                raise
-            plan = self._planner.plan(specification)
+        plan = self._planner.plan(specification, workspace)
         instruction = build_coding_instruction(specification, plan)
         agent_run = self._agent_service.run(instruction)
         acceptance_report = self._validate(specification, plan, agent_run)
@@ -86,7 +83,9 @@ class CodingAgentService:
             if not failed or agent_run.status.value == "failed":
                 break
             agent_run = self._agent_service.run(
-                build_repair_instruction(specification, plan, acceptance_report, attempt)
+                build_repair_instruction(
+                    specification, plan, acceptance_report, attempt
+                )
             )
             acceptance_report = self._validate(specification, plan, agent_run)
             repair_attempts.append(
@@ -138,12 +137,18 @@ def build_coding_instruction(
         )
         if requirement.acceptance_criteria:
             lines.append("Acceptance criteria:")
-            lines.extend(f"- {criterion}" for criterion in requirement.acceptance_criteria)
+            lines.extend(
+                f"- {criterion}" for criterion in requirement.acceptance_criteria
+            )
 
     if specification.constraints:
-        lines.extend(["\nConstraints:", *[f"- {item}" for item in specification.constraints]])
+        lines.extend(
+            ["\nConstraints:", *[f"- {item}" for item in specification.constraints]]
+        )
     if specification.assumptions:
-        lines.extend(["\nAssumptions:", *[f"- {item}" for item in specification.assumptions]])
+        lines.extend(
+            ["\nAssumptions:", *[f"- {item}" for item in specification.assumptions]]
+        )
 
     lines.extend(["\nImplementation Plan:"])
     if plan.summary:
@@ -204,7 +209,9 @@ def build_repair_instruction(
 ) -> str:
     """Render evidence-grounded repair guidance for failed requirements only."""
     failed = _failed_requirements(report)
-    requirements = {requirement.id: requirement for requirement in specification.requirements}
+    requirements = {
+        requirement.id: requirement for requirement in specification.requirements
+    }
     lines = [
         f"You are repairing an existing implementation (repair attempt {attempt}).",
         "Repair only the failed requirements below; do not rewrite unrelated completed work.",
@@ -224,8 +231,12 @@ def build_repair_instruction(
         for task in plan.tasks:
             if result.requirement_id in task.requirement_ids:
                 lines.append(f"Related task: {task.id} — {task.description}")
-                lines.extend(f"Files to inspect: {path}" for path in task.files_to_inspect)
-                lines.extend(f"Files to modify: {path}" for path in task.files_to_modify)
+                lines.extend(
+                    f"Files to inspect: {path}" for path in task.files_to_inspect
+                )
+                lines.extend(
+                    f"Files to modify: {path}" for path in task.files_to_modify
+                )
                 lines.extend(f"Files to modify: {path}" for path in task.files)
     lines.append("\nValidation commands:")
     lines.extend(f"- {command}" for command in plan.validation_commands)
