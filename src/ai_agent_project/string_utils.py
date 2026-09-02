@@ -46,3 +46,22 @@ def is_uppercase(value: str) -> bool:
     """
     # Leverage the built-in str.isupper which checks cased characters
     return value.isupper()
+
+
+def is_digits_only(value: str) -> bool:
+    """Return True only when value is non-empty and every character is an ASCII digit 0-9.
+
+    Args:
+        value: The string to check.
+
+    Returns:
+        True if value is non-empty and consists solely of ASCII digits '0'..'9'.
+    """
+    if not value:
+        return False
+    # Check each character is between '0' and '9' inclusive. This excludes
+    # non-ASCII digits such as full-width digits.
+    for ch in value:
+        if ch < '0' or ch > '9':
+            return False
+    return True
