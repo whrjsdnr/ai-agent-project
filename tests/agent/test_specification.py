@@ -85,3 +85,40 @@ def test_requirement_models_are_frozen() -> None:
 
     with pytest.raises(ValidationError):
         requirement.description = "변경됨"
+
+
+@pytest.mark.parametrize(
+    ("raw_id", "expected"),
+    [
+        ("REQ-002 Palindrome Check", "REQ-002"),
+        ("REQ-002: Palindrome Check", "REQ-002"),
+        ("REQ-002 - Palindrome Check", "REQ-002"),
+        ("req-002 Palindrome Check", "REQ-002"),
+        ("MYREQ-002", "MYREQ-002"),
+        ("REQ-ABC", "REQ-ABC"),
+    ],
+)
+def test_explicit_requirement_ids_are_canonicalized_conservatively(
+    raw_id: str,
+    expected: str,
+) -> None:
+    requirement = Requirement(
+        id=raw_id,
+        title="Palindrome Check",
+        description="Check palindromes.",
+    )
+
+    assert requirement.id == expected
+    assert requirement.title == "Palindrome Check"
+
+
+def test_canonicalized_requirement_ids_cannot_be_duplicated() -> None:
+    with pytest.raises(ValidationError, match="Requirement IDs must be unique"):
+        Specification.model_validate(
+            {
+                "requirements": [
+                    {"id": "REQ-002 Feature A", "description": "A"},
+                    {"id": "REQ-002 Feature B", "description": "B"},
+                ]
+            }
+        )
