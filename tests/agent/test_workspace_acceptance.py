@@ -167,3 +167,84 @@ def test_criterion_classification_is_conservative(
     )
 
     assert result.status is expected
+
+
+@pytest.mark.parametrize(
+    ("criterion", "assertion"),
+    [
+        ('is_digits_only("12345") returns True', 'assert is_digits_only("12345") is True'),
+        ('is_digits_only("12a") returns False', 'assert is_digits_only("12a") is False'),
+        ('is_digits_only("") returns False', 'assert not is_digits_only("")'),
+        ('reverse_string("abc") returns "cba"', 'assert reverse_string("abc") == "cba"'),
+        ('is_palindrome("level") returns True', 'assert is_palindrome("level")'),
+        ('is_palindrome("hello") returns False', 'assert not is_palindrome("hello")'),
+    ],
+)
+def test_functional_criteria_match_direct_ast_assertions(
+    tmp_path: Path,
+    criterion: str,
+    assertion: str,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/string_utils.py").touch()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_string_utils.py").write_text(assertion)
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-001", "description": "feature", "acceptance_criteria": [criterion]}]}
+    )
+    shell = FakeShellTool(ToolResult(success=True, data={}))
+    report = WorkspaceAcceptanceValidator(tmp_path, shell_tool=shell).validate(  # type: ignore[arg-type]
+        specification, make_plan(), AgentState(status=AgentStatus.COMPLETED)
+    )
+
+    result = report.requirements[0].criteria[0]
+    assert result.status is AcceptanceStatus.PASSED
+    assert any("Matched test assertion" in item for item in result.evidence)
+
+
+def test_functional_criterion_without_exact_assertion_is_unknown(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/string_utils.py").touch()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_string_utils.py").write_text('assert is_digits_only("999") is True')
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-001", "description": "feature", "acceptance_criteria": ['is_digits_only("12345") returns True']}]}
+    )
+    report = WorkspaceAcceptanceValidator(
+        tmp_path, shell_tool=FakeShellTool(ToolResult(success=True, data={}))  # type: ignore[arg-type]
+    ).validate(specification, make_plan(), AgentState(status=AgentStatus.COMPLETED))
+
+    assert report.requirements[0].criteria[0].status is AcceptanceStatus.UNKNOWN
+
+
+def test_functional_evidence_does_not_override_failed_validation(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/string_utils.py").touch()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_string_utils.py").write_text('assert is_digits_only("12345") is True')
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-001", "description": "feature", "acceptance_criteria": ['is_digits_only("12345") returns True']}]}
+    )
+    report = WorkspaceAcceptanceValidator(
+        tmp_path,
+        shell_tool=FakeShellTool(ToolResult(success=False, error="pytest failed")),  # type: ignore[arg-type]
+    ).validate(specification, make_plan(), AgentState(status=AgentStatus.COMPLETED))
+
+    assert report.requirements[0].criteria[0].status is AcceptanceStatus.FAILED
+
+
+def test_invalid_test_syntax_is_unknown_with_evidence(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/string_utils.py").touch()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_string_utils.py").write_text("assert is_digits_only(")
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-001", "description": "feature", "acceptance_criteria": ['is_digits_only("12345") returns True']}]}
+    )
+    report = WorkspaceAcceptanceValidator(
+        tmp_path, shell_tool=FakeShellTool(ToolResult(success=True, data={}))  # type: ignore[arg-type]
+    ).validate(specification, make_plan(), AgentState(status=AgentStatus.COMPLETED))
+
+    criterion = report.requirements[0].criteria[0]
+    assert criterion.status is AcceptanceStatus.UNKNOWN
+    assert "Could not parse test file: tests/test_string_utils.py" in criterion.evidence
