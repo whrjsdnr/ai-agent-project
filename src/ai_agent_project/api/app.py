@@ -5,11 +5,14 @@ from pathlib import Path
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from ai_agent_project.agent.acceptance import AcceptanceReport
+from ai_agent_project.agent.acceptance_validator import AcceptanceValidator
 from ai_agent_project.agent.coding_service import CodingAgentService, CodingRunResult
 from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
+from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
 from ai_agent_project.llm.providers.openai import OpenAIClient
 from ai_agent_project.llm.providers.openai_planner import OpenAIImplementationPlanner
 from ai_agent_project.llm.providers.openai_specification import (
@@ -61,6 +64,7 @@ class CodingRunResponse(BaseModel):
     specification: Specification
     plan: ImplementationPlan
     agent_run: AgentRunResponse
+    acceptance_report: AcceptanceReport
 
     @classmethod
     def from_result(cls, result: CodingRunResult) -> "CodingRunResponse":
@@ -70,6 +74,7 @@ class CodingRunResponse(BaseModel):
             specification=result.specification,
             plan=result.plan,
             agent_run=AgentRunResponse.from_state(result.agent_run),
+            acceptance_report=result.acceptance_report,
         )
 
 
@@ -92,12 +97,15 @@ def create_default_coding_agent_service(
     workspace_root: Path | None = None,
     *,
     agent_service: AgentService | None = None,
+    acceptance_validator: AcceptanceValidator | None = None,
 ) -> CodingAgentService:
     """Compose OpenAI parsing/planning with the generic default coding agent."""
     return CodingAgentService(
         specification_parser=OpenAISpecificationParser(),
         planner=OpenAIImplementationPlanner(),
         agent_service=agent_service or create_default_agent_service(workspace_root),
+        acceptance_validator=acceptance_validator
+        or WorkspaceAcceptanceValidator(workspace_root or _default_workspace_root()),
     )
 
 
@@ -105,6 +113,7 @@ def create_app(
     agent_service: AgentService | None = None,
     workspace_root: Path | None = None,
     coding_agent_service: CodingAgentService | None = None,
+    acceptance_validator: AcceptanceValidator | None = None,
 ) -> FastAPI:
     """Create the FastAPI app with injectable agent and default workspace root."""
     if agent_service is None:
@@ -113,6 +122,7 @@ def create_app(
         coding_agent_service = create_default_coding_agent_service(
             workspace_root,
             agent_service=agent_service,
+            acceptance_validator=acceptance_validator,
         )
 
     app = FastAPI(title="AI Agent Project")

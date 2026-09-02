@@ -2,6 +2,11 @@
 
 from pydantic import BaseModel, ConfigDict
 
+from ai_agent_project.agent.acceptance import AcceptanceReport
+from ai_agent_project.agent.acceptance_validator import (
+    AcceptanceValidator,
+    UnconfiguredAcceptanceValidator,
+)
 from ai_agent_project.agent.plan import ImplementationPlan, ImplementationPlanner
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
@@ -17,6 +22,7 @@ class CodingRunResult(BaseModel):
     specification: Specification
     plan: ImplementationPlan
     agent_run: AgentState
+    acceptance_report: AcceptanceReport
 
 
 class CodingAgentService:
@@ -27,10 +33,12 @@ class CodingAgentService:
         specification_parser: SpecificationParser,
         planner: ImplementationPlanner,
         agent_service: AgentService,
+        acceptance_validator: AcceptanceValidator | None = None,
     ) -> None:
         self._specification_parser = specification_parser
         self._planner = planner
         self._agent_service = agent_service
+        self._acceptance_validator = acceptance_validator or UnconfiguredAcceptanceValidator()
 
     def run_from_specification(self, specification_text: str) -> CodingRunResult:
         """Parse and plan source text, then execute the full plan in one agent run."""
@@ -38,10 +46,16 @@ class CodingAgentService:
         plan = self._planner.plan(specification)
         instruction = build_coding_instruction(specification, plan)
         agent_run = self._agent_service.run(instruction)
+        acceptance_report = self._acceptance_validator.validate(
+            specification,
+            plan,
+            agent_run,
+        )
         return CodingRunResult(
             specification=specification,
             plan=plan,
             agent_run=agent_run,
+            acceptance_report=acceptance_report,
         )
 
 

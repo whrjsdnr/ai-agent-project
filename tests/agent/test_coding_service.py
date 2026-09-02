@@ -2,6 +2,11 @@
 
 import pytest
 
+from ai_agent_project.agent.acceptance import (
+    AcceptanceReport,
+    AcceptanceStatus,
+    RequirementValidationResult,
+)
 from ai_agent_project.agent.coding_service import (
     CodingAgentService,
     build_coding_instruction,
@@ -104,6 +109,30 @@ class FakeAgentService:
         return self._state
 
 
+class FakeAcceptanceValidator:
+    """Record validation after an agent state has been produced."""
+
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def validate(
+        self,
+        specification: Specification,
+        plan: ImplementationPlan,
+        agent_state: AgentState,
+    ) -> AcceptanceReport:
+        del specification, plan, agent_state
+        self._calls.append("validate")
+        return AcceptanceReport(
+            requirements=[
+                RequirementValidationResult(
+                    requirement_id="REQ-001",
+                    status=AcceptanceStatus.PASSED,
+                )
+            ]
+        )
+
+
 def test_coding_service_orchestrates_parse_plan_and_agent_run() -> None:
     calls: list[str] = []
     specification = make_specification()
@@ -112,16 +141,22 @@ def test_coding_service_orchestrates_parse_plan_and_agent_run() -> None:
     parser = FakeParser(specification, calls)
     planner = FakePlanner(plan, calls)
     agent = FakeAgentService(agent_state, calls)
-    service = CodingAgentService(parser, planner, agent)  # type: ignore[arg-type]
+    service = CodingAgentService(
+        parser,
+        planner,
+        agent,  # type: ignore[arg-type]
+        FakeAcceptanceValidator(calls),
+    )
 
     result = service.run_from_specification("source requirements")
 
-    assert calls == ["parse", "plan", "agent"]
+    assert calls == ["parse", "plan", "agent", "validate"]
     assert parser.received_text == "source requirements"
     assert planner.received_specification is specification
     assert result.specification is specification
     assert result.plan is plan
     assert result.agent_run is agent_state
+    assert result.acceptance_report.status is AcceptanceStatus.PASSED
     assert agent.received_instruction is not None
     assert "REQ-001" in agent.received_instruction
     assert "TASK-001" in agent.received_instruction

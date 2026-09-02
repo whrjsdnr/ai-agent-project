@@ -6,6 +6,11 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from ai_agent_project.agent.acceptance import (
+    AcceptanceReport,
+    AcceptanceStatus,
+    RequirementValidationResult,
+)
 from ai_agent_project.agent.coding_service import CodingAgentService
 from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.service import AgentService
@@ -165,10 +170,30 @@ def test_coding_run_endpoint_uses_injected_orchestration_dependencies() -> None:
             assert "TASK-001" in instruction
             return AgentState(status=AgentStatus.COMPLETED, final_answer="Implemented")
 
+    class FakeAcceptanceValidator:
+        def validate(
+            self,
+            parsed: Specification,
+            implementation_plan: ImplementationPlan,
+            agent_state: AgentState,
+        ) -> AcceptanceReport:
+            assert parsed is specification
+            assert implementation_plan is plan
+            assert agent_state.status is AgentStatus.COMPLETED
+            return AcceptanceReport(
+                requirements=[
+                    RequirementValidationResult(
+                        requirement_id="REQ-001",
+                        status=AcceptanceStatus.PASSED,
+                    )
+                ]
+            )
+
     coding_service = CodingAgentService(
         FakeParser(),
         FakePlanner(),
         FakeCodingAgent(),  # type: ignore[arg-type]
+        FakeAcceptanceValidator(),
     )
     client = TestClient(create_app(coding_agent_service=coding_service))
 
@@ -182,3 +207,4 @@ def test_coding_run_endpoint_uses_injected_orchestration_dependencies() -> None:
     assert response.json()["specification"]["requirements"][0]["id"] == "REQ-001"
     assert response.json()["plan"]["tasks"][0]["id"] == "TASK-001"
     assert response.json()["agent_run"]["final_answer"] == "Implemented"
+    assert response.json()["acceptance_report"]["status"] == "passed"
