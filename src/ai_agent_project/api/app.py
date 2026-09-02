@@ -11,6 +11,7 @@ from ai_agent_project.llm.providers.openai import OpenAIClient
 from ai_agent_project.tools.calculator import CalculatorTool
 from ai_agent_project.tools.file import FileTool
 from ai_agent_project.tools.registry import ToolRegistry
+from ai_agent_project.tools.shell import ShellTool
 
 
 class AgentRunRequest(BaseModel):
@@ -46,10 +47,12 @@ def _default_workspace_root() -> Path:
 
 
 def create_default_agent_service(workspace_root: Path | None = None) -> AgentService:
-    """Build the default agent with OpenAI, calculator, and workspace file tools."""
+    """Build the default agent with OpenAI and workspace-scoped development tools."""
     registry = ToolRegistry()
+    resolved_workspace_root = workspace_root or _default_workspace_root()
     registry.register(CalculatorTool())
-    registry.register(FileTool(workspace_root or _default_workspace_root()))
+    registry.register(FileTool(resolved_workspace_root))
+    registry.register(ShellTool(resolved_workspace_root))
     return AgentService(OpenAIClient(), registry)
 
 

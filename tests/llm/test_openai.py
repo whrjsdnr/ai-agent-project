@@ -57,6 +57,7 @@ def test_openai_client_converts_calculator_tool_and_function_call() -> None:
     )
     request = fake_client.responses.requests[0]
     assert request["model"] == "test-model"
+    assert request["tool_choice"] == "auto"
     assert request["tools"] == [
         {
             "type": "function",
@@ -66,6 +67,19 @@ def test_openai_client_converts_calculator_tool_and_function_call() -> None:
             "strict": False,
         }
     ]
+
+
+def test_openai_client_can_require_a_tool_call() -> None:
+    fake_client = FakeOpenAIAPIClient([SimpleNamespace(output=[], output_text="Done")])
+    provider = OpenAIClient(
+        client=fake_client,
+        model="test-model",
+        tool_choice="required",
+    )
+
+    provider.complete([AgentMessage(role="user", content="Use a tool")], [])
+
+    assert fake_client.responses.requests[0]["tool_choice"] == "required"
 
 
 def test_openai_client_converts_tool_result_to_function_call_output() -> None:

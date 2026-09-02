@@ -3,7 +3,7 @@
 import json
 import os
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from openai.types.responses import (
     ResponseFunctionToolCallParam,
@@ -16,6 +16,7 @@ from ai_agent_project.llm.base import LLMResponse
 from ai_agent_project.tools.base import ToolDefinition
 
 DEFAULT_MODEL = "gpt-5-mini"
+ToolChoice = Literal["auto", "required"]
 
 
 class ResponsesAPI(Protocol):
@@ -42,11 +43,16 @@ class OpenAIClient:
         model: str | None = None,
         client: OpenAIAPIClient | None = None,
         use_previous_response_id: bool = False,
+        tool_choice: ToolChoice = "auto",
     ) -> None:
+        if tool_choice not in {"auto", "required"}:
+            raise ValueError("tool_choice must be 'auto' or 'required'")
+
         self._model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
         self._client = client
         self._api_key = api_key or os.getenv("OPENAI_API_KEY")
         self._use_previous_response_id = use_previous_response_id
+        self._tool_choice = tool_choice
 
     def complete(
         self,
@@ -59,6 +65,7 @@ class OpenAIClient:
             "model": self._model,
             "input": input_items,
             "tools": self._to_openai_tools(tools),
+            "tool_choice": self._tool_choice,
             "parallel_tool_calls": False,
             "store": self._use_previous_response_id,
         }
