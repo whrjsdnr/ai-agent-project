@@ -1,6 +1,6 @@
 """Tests for string_utils functions."""
 
-from ai_agent_project.string_utils import is_palindrome, reverse_string, is_uppercase
+from ai_agent_project.string_utils import is_palindrome, is_uppercase, reverse_string
 
 
 def test_reverse_hello() -> None:
