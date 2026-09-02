@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from ai_agent_project.tools.base import ToolResult
+
 
 class AgentStatus(StrEnum):
     """Lifecycle states for an agent run."""
@@ -30,6 +32,7 @@ class AgentMessage(BaseModel):
     content: str
     tool_call_id: str | None = None
     tool_call: ToolCall | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
     provider_context: dict[str, Any] | None = None
 
 
@@ -40,5 +43,7 @@ class AgentState(BaseModel):
     messages: list[AgentMessage] = Field(default_factory=list)
     status: AgentStatus = AgentStatus.RUNNING
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_results: list[ToolResult] = Field(default_factory=list)
+    iteration_count: int = 0
     error: str | None = None
     final_answer: str | None = None

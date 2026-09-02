@@ -13,6 +13,7 @@ class LLMResponse(BaseModel):
 
     final_answer: str | None = None
     tool_call: ToolCall | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
     provider_context: dict[str, Any] = Field(default_factory=dict)
 
 

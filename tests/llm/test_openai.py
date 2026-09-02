@@ -69,6 +69,35 @@ def test_openai_client_converts_calculator_tool_and_function_call() -> None:
     ]
 
 
+def test_openai_client_extracts_all_function_calls_from_one_response() -> None:
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call",
+                call_id="call_a",
+                name="calculator",
+                arguments='{"operation":"add","a":1,"b":2}',
+            ),
+            SimpleNamespace(
+                type="function_call",
+                call_id="call_b",
+                name="calculator",
+                arguments='{"operation":"multiply","a":3,"b":4}',
+            ),
+        ],
+        output_text="",
+    )
+    provider = OpenAIClient(
+        client=FakeOpenAIAPIClient([response]),
+        model="test-model",
+    )
+
+    result = provider.complete([], [CalculatorTool().definition()])
+
+    assert [call.id for call in result.tool_calls] == ["call_a", "call_b"]
+    assert result.tool_call == result.tool_calls[0]
+
+
 def test_openai_client_can_require_a_tool_call() -> None:
     fake_client = FakeOpenAIAPIClient([SimpleNamespace(output=[], output_text="Done")])
     provider = OpenAIClient(

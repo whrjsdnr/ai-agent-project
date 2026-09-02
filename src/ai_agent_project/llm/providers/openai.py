@@ -75,9 +75,13 @@ class OpenAIClient:
         response = self._get_client().responses.create(**request)
         provider_context = self._provider_context(response)
 
-        tool_call = self._extract_tool_call(response)
-        if tool_call is not None:
-            return LLMResponse(tool_call=tool_call, provider_context=provider_context)
+        tool_calls = self._extract_tool_calls(response)
+        if tool_calls:
+            return LLMResponse(
+                tool_call=tool_calls[0],
+                tool_calls=tool_calls,
+                provider_context=provider_context,
+            )
 
         return LLMResponse(
             final_answer=getattr(response, "output_text", ""),
@@ -245,14 +249,18 @@ class OpenAIClient:
                 if isinstance(continuation_items, list):
                     input_items.extend(continuation_items)
                     continue
-            if message.tool_call is not None:
-                input_items.append(
+            tool_calls = message.tool_calls or (
+                [message.tool_call] if message.tool_call is not None else []
+            )
+            if tool_calls:
+                input_items.extend(
                     {
                         "type": "function_call",
-                        "call_id": message.tool_call.id,
-                        "name": message.tool_call.name,
-                        "arguments": json.dumps(message.tool_call.arguments),
+                        "call_id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": json.dumps(tool_call.arguments),
                     }
+                    for tool_call in tool_calls
                 )
             elif message.role == "tool":
                 if message.tool_call_id is None:
@@ -284,8 +292,9 @@ class OpenAIClient:
 
 
     @staticmethod
-    def _extract_tool_call(response: Any) -> ToolCall | None:
-        """Extract the first function call requested in an OpenAI response."""
+    def _extract_tool_calls(response: Any) -> list[ToolCall]:
+        """Extract every function call requested in an OpenAI response."""
+        tool_calls: list[ToolCall] = []
         for item in getattr(response, "output", []):
             if getattr(item, "type", None) != "function_call":
                 continue
@@ -298,6 +307,8 @@ class OpenAIClient:
             if not isinstance(arguments, dict):
                 raise TypeError("OpenAI function call arguments must be an object")
 
-            return ToolCall(id=item.call_id, name=item.name, arguments=arguments)
+            tool_calls.append(
+                ToolCall(id=item.call_id, name=item.name, arguments=arguments)
+            )
 
-        return None
+        return tool_calls
