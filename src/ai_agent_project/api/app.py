@@ -16,6 +16,7 @@ from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
+from ai_agent_project.agent.workspace import FilesystemWorkspaceInspector
 from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
 from ai_agent_project.llm.providers.openai import OpenAIClient
 from ai_agent_project.llm.providers.openai_planner import OpenAIImplementationPlanner
@@ -112,6 +113,9 @@ def create_default_coding_agent_service(
         agent_service=agent_service or create_default_agent_service(workspace_root),
         acceptance_validator=acceptance_validator
         or WorkspaceAcceptanceValidator(workspace_root or _default_workspace_root()),
+        workspace_inspector=FilesystemWorkspaceInspector(
+            workspace_root or _default_workspace_root()
+        ),
     )
 
 

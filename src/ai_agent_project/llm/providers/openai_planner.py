@@ -12,6 +12,7 @@ from ai_agent_project.agent.plan import (
     ImplementationPlanValidationError,
 )
 from ai_agent_project.agent.specification import Specification
+from ai_agent_project.agent.workspace import WorkspaceSnapshot
 from ai_agent_project.llm.providers.openai import (
     DEFAULT_MODEL,
     OpenAIAPIClient,
@@ -37,7 +38,11 @@ class OpenAIImplementationPlanner(ImplementationPlanner):
         self._client = client
         self._api_key = api_key or os.getenv("OPENAI_API_KEY")
 
-    def plan(self, specification: Specification) -> ImplementationPlan:
+    def plan(
+        self,
+        specification: Specification,
+        workspace: WorkspaceSnapshot | None = None,
+    ) -> ImplementationPlan:
         """Request an implementation plan and validate it against the specification."""
         response = self._get_client().responses.create(
             model=self._model,
@@ -46,9 +51,13 @@ class OpenAIImplementationPlanner(ImplementationPlanner):
                 {
                     "role": "user",
                     "content": json.dumps(
-                        specification.model_dump(mode="json"),
+                        {
+                            "specification": specification.model_dump(mode="json"),
+                            "workspace_files": workspace.files if workspace else [],
+                            "workspace_truncated": workspace.truncated if workspace else False,
+                        },
                         ensure_ascii=False,
-                    ),
+                    ) + "\n\nExisting workspace files are the source of truth. Put relevant existing files in files_to_inspect; put files to change or create in files_to_modify. Do not use absolute paths, .. paths, or .env files.",
                 }
             ],
             text={

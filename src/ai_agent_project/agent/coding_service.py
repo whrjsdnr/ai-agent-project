@@ -16,6 +16,7 @@ from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.specification_parser import SpecificationParser
 from ai_agent_project.agent.state import AgentState
+from ai_agent_project.agent.workspace import WorkspaceInspector, WorkspaceSnapshot
 
 
 class CodingRunResult(BaseModel):
@@ -51,6 +52,7 @@ class CodingAgentService:
         agent_service: AgentService,
         acceptance_validator: AcceptanceValidator | None = None,
         max_repair_attempts: int = 2,
+        workspace_inspector: WorkspaceInspector | None = None,
     ) -> None:
         self._specification_parser = specification_parser
         self._planner = planner
@@ -59,11 +61,22 @@ class CodingAgentService:
         if max_repair_attempts < 0:
             raise ValueError("max_repair_attempts must be zero or greater")
         self._max_repair_attempts = max_repair_attempts
+        self._workspace_inspector = workspace_inspector
 
     def run_from_specification(self, specification_text: str) -> CodingRunResult:
         """Parse and plan source text, then execute the full plan in one agent run."""
         specification = self._specification_parser.parse(specification_text)
-        plan = self._planner.plan(specification)
+        workspace = (
+            self._workspace_inspector.inspect()
+            if self._workspace_inspector is not None
+            else WorkspaceSnapshot()
+        )
+        try:
+            plan = self._planner.plan(specification, workspace)
+        except TypeError as error:
+            if "positional" not in str(error):
+                raise
+            plan = self._planner.plan(specification)
         instruction = build_coding_instruction(specification, plan)
         agent_run = self._agent_service.run(instruction)
         acceptance_report = self._validate(specification, plan, agent_run)

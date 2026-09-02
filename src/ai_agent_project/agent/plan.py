@@ -5,6 +5,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ai_agent_project.agent.specification import Specification
+from ai_agent_project.agent.workspace import WorkspaceSnapshot
 from ai_agent_project.command_policy import (
     CommandPolicyError,
     parse_safe_command,
@@ -100,7 +101,11 @@ class ImplementationPlan(BaseModel):
 class ImplementationPlanner(Protocol):
     """Convert a parsed Specification into a validated ImplementationPlan."""
 
-    def plan(self, specification: Specification) -> ImplementationPlan:
+    def plan(
+        self,
+        specification: Specification,
+        workspace: WorkspaceSnapshot | None = None,
+    ) -> ImplementationPlan:
         """Return a plan with validated traceability and dependencies."""
         ...
 
