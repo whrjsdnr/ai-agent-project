@@ -1,7 +1,7 @@
 [project]
 name = "ai-agent-project"
 version = "0.1.0"
-description = "Add your description here"
+description = "Lifecycle-driven AI coding agent with planning, execution, validation, checkpoints, and persistent CLI project runs"
 readme = "README.md"
 authors = [
     { name = "whrjsdnr", email = "geonugjo@gmail.com" }
