@@ -5,6 +5,12 @@ import os
 from collections.abc import Mapping
 from typing import Any, Protocol
 
+from openai.types.responses import (
+    ResponseFunctionToolCallParam,
+    ResponseOutputMessageParam,
+    ResponseReasoningItemParam,
+)
+
 from ai_agent_project.agent.state import AgentMessage, ToolCall
 from ai_agent_project.llm.base import LLMResponse
 from ai_agent_project.tools.base import ToolDefinition
@@ -92,10 +98,11 @@ class OpenAIClient:
 
     @classmethod
     def _provider_context(cls, response: Any) -> dict[str, Any]:
-        """Preserve every response output item for a later stateless replay."""
+        """Store response output as request-safe continuation input items."""
         context: dict[str, Any] = {
-            "output_items": [
-                cls._to_json_value(item) for item in getattr(response, "output", [])
+            "input_items": [
+                cls._response_output_to_input_item(item)
+                for item in getattr(response, "output", [])
             ]
         }
         response_id = getattr(response, "id", None)
@@ -105,20 +112,106 @@ class OpenAIClient:
         return context
 
     @classmethod
-    def _to_json_value(cls, value: Any) -> Any:
-        """Convert SDK response models into JSON-compatible data without filtering fields."""
-        if hasattr(value, "model_dump"):
-            return cls._to_json_value(value.model_dump(mode="json", exclude_none=False))
-        if isinstance(value, Mapping):
-            return {key: cls._to_json_value(item) for key, item in value.items()}
-        if isinstance(value, list | tuple):
-            return [cls._to_json_value(item) for item in value]
-        if hasattr(value, "__dict__"):
-            return {
-                key: cls._to_json_value(item)
-                for key, item in vars(value).items()
-                if not key.startswith("_")
-            }
+    def _response_output_to_input_item(cls, item: Any) -> dict[str, Any]:
+        """Normalize an output item to the matching Responses input schema.
+
+        Responses output objects contain server-populated fields such as ``status``.
+        Constructing each supported input item field-by-field prevents them from being
+        sent back on a stateless continuation.
+        """
+        item_type = cls._item_value(item, "type")
+        if item_type == "function_call":
+            return cls._function_call_input(item)
+        if item_type == "reasoning":
+            return cls._reasoning_input(item)
+        if item_type == "message":
+            return cls._message_input(item)
+
+        raise ValueError(f"Unsupported OpenAI response output item type: {item_type!r}")
+
+    @classmethod
+    def _function_call_input(cls, item: Any) -> ResponseFunctionToolCallParam:
+        """Build a request function call from its response counterpart."""
+        return {
+            "type": "function_call",
+            "call_id": cls._required_string(item, "call_id"),
+            "name": cls._required_string(item, "name"),
+            "arguments": cls._required_string(item, "arguments"),
+        }
+
+    @classmethod
+    def _reasoning_input(cls, item: Any) -> ResponseReasoningItemParam:
+        """Build request-safe reasoning input, including encrypted continuation data."""
+        reasoning: ResponseReasoningItemParam = {
+            "type": "reasoning",
+            "id": cls._required_string(item, "id"),
+            "summary": cls._reasoning_parts(item, "summary", "summary_text"),
+        }
+        content = cls._item_value(item, "content")
+        if content is not None:
+            reasoning["content"] = cls._reasoning_parts(item, "content", "reasoning_text")
+        encrypted_content = cls._item_value(item, "encrypted_content")
+        if isinstance(encrypted_content, str):
+            reasoning["encrypted_content"] = encrypted_content
+        return reasoning
+
+    @classmethod
+    def _reasoning_parts(
+        cls,
+        item: Any,
+        field: str,
+        part_type: str,
+    ) -> list[dict[str, str]]:
+        """Convert reasoning text parts without replaying response-only attributes."""
+        parts = cls._item_value(item, field)
+        if not isinstance(parts, list | tuple):
+            raise TypeError(f"OpenAI reasoning item must include a {field} list")
+        return [
+            {"type": part_type, "text": cls._required_string(part, "text")}
+            for part in parts
+        ]
+
+    @classmethod
+    def _message_input(cls, item: Any) -> ResponseOutputMessageParam:
+        """Build an assistant message input from supported output content parts."""
+        content = cls._item_value(item, "content")
+        if not isinstance(content, list | tuple):
+            raise TypeError("OpenAI message output must include a content list")
+
+        message: ResponseOutputMessageParam = {
+            "type": "message",
+            "id": cls._required_string(item, "id"),
+            "role": "assistant",
+            "content": [cls._message_content_input(part) for part in content],
+        }
+        phase = cls._item_value(item, "phase")
+        if phase in {"commentary", "final_answer"}:
+            message["phase"] = phase
+        return message
+
+    @classmethod
+    def _message_content_input(cls, part: Any) -> dict[str, str]:
+        """Keep only content fields accepted for a replayed assistant message."""
+        part_type = cls._item_value(part, "type")
+        if part_type == "output_text":
+            return {"type": "output_text", "text": cls._required_string(part, "text")}
+        if part_type == "refusal":
+            return {"type": "refusal", "refusal": cls._required_string(part, "refusal")}
+        raise ValueError(f"Unsupported OpenAI message content type: {part_type!r}")
+
+    @staticmethod
+    def _item_value(item: Any, field: str) -> Any:
+        """Read one SDK model field without serializing the complete output object."""
+        if isinstance(item, Mapping):
+            return item.get(field)
+        return getattr(item, field, None)
+
+    @classmethod
+    def _required_string(cls, item: Any, field: str) -> str:
+        """Return a required string field from an OpenAI response item."""
+        value = cls._item_value(item, field)
+        if not isinstance(value, str):
+            raise TypeError(f"OpenAI response item field {field!r} must be a string")
         return value
 
     @staticmethod
@@ -141,9 +234,9 @@ class OpenAIClient:
         input_items: list[dict[str, Any]] = []
         for message in messages:
             if message.provider_context is not None:
-                output_items = message.provider_context.get("output_items")
-                if isinstance(output_items, list):
-                    input_items.extend(output_items)
+                continuation_items = message.provider_context.get("input_items")
+                if isinstance(continuation_items, list):
+                    input_items.extend(continuation_items)
                     continue
             if message.tool_call is not None:
                 input_items.append(

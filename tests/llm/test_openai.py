@@ -37,6 +37,7 @@ def test_openai_client_converts_calculator_tool_and_function_call() -> None:
                 call_id="call_123",
                 name="calculator",
                 arguments='{"operation":"add","a":10,"b":20}',
+                status="completed",
             )
         ],
         output_text="",
@@ -102,12 +103,19 @@ def test_openai_client_replays_all_output_items_for_stateless_tool_calls() -> No
     first_response = SimpleNamespace(
         id="response_123",
         output=[
-            SimpleNamespace(type="reasoning", id="reasoning_123", encrypted_content="opaque"),
+            SimpleNamespace(
+                type="reasoning",
+                id="reasoning_123",
+                summary=[],
+                encrypted_content="opaque",
+                status="completed",
+            ),
             SimpleNamespace(
                 type="function_call",
                 call_id="call_123",
                 name="calculator",
                 arguments='{"operation":"add","a":10,"b":20}',
+                status="completed",
             ),
         ],
         output_text="",
@@ -140,7 +148,12 @@ def test_openai_client_replays_all_output_items_for_stateless_tool_calls() -> No
 
     assert second_result.final_answer == "The result is 30."
     assert fake_client.responses.requests[1]["input"][1:3] == [
-        {"type": "reasoning", "id": "reasoning_123", "encrypted_content": "opaque"},
+        {
+            "type": "reasoning",
+            "id": "reasoning_123",
+            "summary": [],
+            "encrypted_content": "opaque",
+        },
         {
             "type": "function_call",
             "call_id": "call_123",
@@ -148,6 +161,14 @@ def test_openai_client_replays_all_output_items_for_stateless_tool_calls() -> No
             "arguments": '{"operation":"add","a":10,"b":20}',
         },
     ]
+    assert all(
+        "status" not in item for item in fake_client.responses.requests[1]["input"]
+    )
+    assert fake_client.responses.requests[1]["input"][-1] == {
+        "type": "function_call_output",
+        "call_id": "call_123",
+        "output": '{"success":true,"data":{"result":30},"error":null}',
+    }
 
 
 def test_openai_client_replays_output_items_from_each_completed_turn() -> None:
@@ -166,12 +187,20 @@ def test_openai_client_replays_output_items_from_each_completed_turn() -> None:
     second_response = SimpleNamespace(
         id="response_456",
         output=[
-            SimpleNamespace(type="reasoning", id="reasoning_456", encrypted_content="opaque"),
+            SimpleNamespace(
+                type="reasoning",
+                id="reasoning_456",
+                summary=[],
+                encrypted_content="opaque",
+                status="completed",
+            ),
             SimpleNamespace(
                 type="message",
                 id="message_456",
                 role="assistant",
                 content=[{"type": "output_text", "text": "The result is 30."}],
+                phase="final_answer",
+                status="completed",
             ),
         ],
         output_text="The result is 30.",
@@ -226,15 +255,24 @@ def test_openai_client_replays_output_items_from_each_completed_turn() -> None:
     )
 
     assert fake_client.responses.requests[2]["input"][-3:] == [
-        {"type": "reasoning", "id": "reasoning_456", "encrypted_content": "opaque"},
+        {
+            "type": "reasoning",
+            "id": "reasoning_456",
+            "summary": [],
+            "encrypted_content": "opaque",
+        },
         {
             "type": "message",
             "id": "message_456",
             "role": "assistant",
             "content": [{"type": "output_text", "text": "The result is 30."}],
+            "phase": "final_answer",
         },
         {"role": "user", "content": "What should I try next?"},
     ]
+    assert all(
+        "status" not in item for item in fake_client.responses.requests[2]["input"]
+    )
 
 
 def test_openai_client_can_continue_with_previous_response_id() -> None:
