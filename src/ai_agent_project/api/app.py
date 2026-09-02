@@ -2,17 +2,32 @@
 
 from pathlib import Path
 
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field, field_validator
 
 from ai_agent_project.agent.acceptance import AcceptanceReport
 from ai_agent_project.agent.acceptance_validator import AcceptanceValidator
+from ai_agent_project.agent.checkpoint import (
+    CheckpointDecision,
+    PhaseCheckpointService,
+    ProgressReporter,
+)
 from ai_agent_project.agent.coding_service import (
     CodingAgentService,
     CodingRunResult,
     RepairAttempt,
 )
+from ai_agent_project.agent.phase_execution import PhaseExecutionService
 from ai_agent_project.agent.plan import ImplementationPlan
+from ai_agent_project.agent.project_application import (
+    InMemoryProjectRunStore,
+    ProjectApplicationService,
+    ProjectRunAlreadyExistsError,
+    ProjectRunNotFoundError,
+    StoredProjectRun,
+)
+from ai_agent_project.agent.project_execution import ProjectExecutionService
+from ai_agent_project.agent.project_runner import ProjectRunner
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
@@ -20,6 +35,7 @@ from ai_agent_project.agent.workspace import FilesystemWorkspaceInspector
 from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
 from ai_agent_project.llm.providers.openai import OpenAIClient
 from ai_agent_project.llm.providers.openai_planner import OpenAIImplementationPlanner
+from ai_agent_project.llm.providers.openai_project_planner import OpenAIProjectPlanner
 from ai_agent_project.llm.providers.openai_specification import (
     OpenAISpecificationParser,
 )
@@ -85,6 +101,28 @@ class CodingRunResponse(BaseModel):
         )
 
 
+class CreateProjectRunRequest(BaseModel):
+    """Request body for a planning-only project bootstrap."""
+
+    source_text: str
+    project_title: str | None = None
+    source_format: str | None = None
+
+    @field_validator("source_text")
+    @classmethod
+    def reject_blank_source_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("source_text must not be blank")
+        return value
+
+
+class ProjectDecisionRequest(BaseModel):
+    """Request body for an explicit project phase checkpoint decision."""
+
+    decision: CheckpointDecision
+    note: str | None = None
+
+
 def _default_workspace_root() -> Path:
     """Return the project root containing the source tree."""
     return Path(__file__).resolve().parents[3]
@@ -119,11 +157,42 @@ def create_default_coding_agent_service(
     )
 
 
+def create_default_project_application_service(
+    workspace_root: Path | None = None,
+    *,
+    agent_service: AgentService | None = None,
+) -> ProjectApplicationService:
+    """Compose planning, phase lifecycle, and one app-scoped in-memory store."""
+    resolved_workspace_root = workspace_root or _default_workspace_root()
+    phase_execution_service = PhaseExecutionService(
+        agent_service or create_default_agent_service(resolved_workspace_root),
+        WorkspaceAcceptanceValidator(resolved_workspace_root),
+    )
+    project_execution_service = ProjectExecutionService(
+        phase_execution_service,
+        ProgressReporter(),
+        PhaseCheckpointService(),
+    )
+    project_runner = ProjectRunner(
+        OpenAISpecificationParser(),
+        FilesystemWorkspaceInspector(resolved_workspace_root),
+        OpenAIImplementationPlanner(),
+        OpenAIProjectPlanner(),
+        project_execution_service,
+    )
+    return ProjectApplicationService(
+        project_runner,
+        project_execution_service,
+        InMemoryProjectRunStore(),
+    )
+
+
 def create_app(
     agent_service: AgentService | None = None,
     workspace_root: Path | None = None,
     coding_agent_service: CodingAgentService | None = None,
     acceptance_validator: AcceptanceValidator | None = None,
+    project_application_service: ProjectApplicationService | None = None,
 ) -> FastAPI:
     """Create the FastAPI app with injectable agent and default workspace root."""
     if agent_service is None:
@@ -134,10 +203,16 @@ def create_app(
             agent_service=agent_service,
             acceptance_validator=acceptance_validator,
         )
+    if project_application_service is None:
+        project_application_service = create_default_project_application_service(
+            workspace_root,
+            agent_service=agent_service,
+        )
 
     app = FastAPI(title="AI Agent Project")
     app.state.agent_service = agent_service
     app.state.coding_agent_service = coding_agent_service
+    app.state.project_application_service = project_application_service
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -155,6 +230,81 @@ def create_app(
         """Parse, plan, and execute one specification-driven coding run."""
         result = coding_agent_service.run_from_specification(request.specification)
         return CodingRunResponse.from_result(result)
+
+    @app.post(
+        "/v1/project-runs",
+        response_model=StoredProjectRun,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_project_run(request: CreateProjectRunRequest) -> StoredProjectRun:
+        """Bootstrap and store a project without executing its first phase."""
+        try:
+            return project_application_service.create_project(
+                request.source_text,
+                project_title=request.project_title,
+                source_format=request.source_format,
+            )
+        except ProjectRunAlreadyExistsError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Project run already exists.",
+            ) from error
+
+    @app.get("/v1/project-runs/{project_run_id}", response_model=StoredProjectRun)
+    def get_project_run(project_run_id: str) -> StoredProjectRun:
+        """Return one stored project run snapshot without changing its lifecycle."""
+        try:
+            return project_application_service.get_project(project_run_id)
+        except ProjectRunNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project run not found.",
+            ) from error
+
+    @app.post(
+        "/v1/project-runs/{project_run_id}/execute",
+        response_model=StoredProjectRun,
+    )
+    def execute_project_phase(project_run_id: str) -> StoredProjectRun:
+        """Execute exactly the current phase; callers decide checkpoints separately."""
+        try:
+            return project_application_service.execute_current_phase(project_run_id)
+        except ProjectRunNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project run not found.",
+            ) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Project lifecycle conflict.",
+            ) from error
+
+    @app.post(
+        "/v1/project-runs/{project_run_id}/decisions",
+        response_model=StoredProjectRun,
+    )
+    def decide_project_phase(
+        project_run_id: str,
+        request: ProjectDecisionRequest,
+    ) -> StoredProjectRun:
+        """Store a phase decision without automatically executing another phase."""
+        try:
+            return project_application_service.decide_current_phase(
+                project_run_id,
+                request.decision,
+                note=request.note,
+            )
+        except ProjectRunNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project run not found.",
+            ) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Project lifecycle conflict.",
+            ) from error
 
     return app
 
