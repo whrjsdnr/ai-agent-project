@@ -85,7 +85,11 @@ class WorkspaceAcceptanceValidator:
         paths = _stable_paths(
             path
             for task in tasks
-            for path in [*task.files_to_modify, *task.files]
+            for path in [
+                *task.files_to_modify,
+                *task.files_to_inspect,
+                *task.files,
+            ]
         )
         implemented_files, test_files, file_evidence, files_exist = self._inspect_paths(paths)
         evidence = [*file_evidence, *command_evidence]

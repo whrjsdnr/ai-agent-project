@@ -91,6 +91,39 @@ def test_validator_records_traceability_files_and_validation_evidence(tmp_path: 
     assert "Validation command passed: uv run pytest" in requirement.evidence
 
 
+def test_traceability_collects_inspect_modify_and_legacy_files(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/example.py").touch()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_example.py").touch()
+    specification = Specification.model_validate(
+        {"requirements": [{"id": "REQ-001", "description": "feature"}]}
+    )
+    plan = ImplementationPlan.model_validate(
+        {
+            "tasks": [
+                {
+                    "id": "TASK-001",
+                    "title": "feature",
+                    "description": "feature",
+                    "requirement_ids": ["REQ-001"],
+                    "files_to_modify": ["src/example.py", "tests/test_example.py"],
+                    "files_to_inspect": ["tests/test_example.py", "src/example.py"],
+                    "files": ["tests/test_example.py"],
+                }
+            ],
+            "validation_commands": ["uv run pytest"],
+        }
+    )
+    report = WorkspaceAcceptanceValidator(
+        tmp_path, shell_tool=FakeShellTool(ToolResult(success=True, data={}))  # type: ignore[arg-type]
+    ).validate(specification, plan, AgentState(status=AgentStatus.COMPLETED))
+
+    result = report.requirements[0]
+    assert result.implemented_files == ["src/example.py"]
+    assert result.test_files == ["tests/test_example.py"]
+
+
 def test_validation_failure_overrides_agent_final_answer(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src/string_utils.py").touch()
