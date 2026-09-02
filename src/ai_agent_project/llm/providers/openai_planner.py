@@ -1,0 +1,91 @@
+"""OpenAI Responses structured-output implementation planner."""
+
+import json
+import os
+
+from pydantic import ValidationError
+
+from ai_agent_project.agent.plan import (
+    IMPLEMENTATION_PLANNER_INSTRUCTIONS,
+    ImplementationPlan,
+    ImplementationPlanner,
+    ImplementationPlanValidationError,
+)
+from ai_agent_project.agent.specification import Specification
+from ai_agent_project.llm.providers.openai import (
+    DEFAULT_MODEL,
+    OpenAIAPIClient,
+)
+
+
+class ImplementationPlanningError(ValueError):
+    """Raised when an OpenAI response cannot become a valid implementation plan."""
+
+
+class OpenAIImplementationPlanner(ImplementationPlanner):
+    """Create validated implementation plans with OpenAI structured output."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        model: str | None = None,
+        client: OpenAIAPIClient | None = None,
+    ) -> None:
+        self._model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
+        self._client = client
+        self._api_key = api_key or os.getenv("OPENAI_API_KEY")
+
+    def plan(self, specification: Specification) -> ImplementationPlan:
+        """Request an implementation plan and validate it against the specification."""
+        response = self._get_client().responses.create(
+            model=self._model,
+            instructions=IMPLEMENTATION_PLANNER_INSTRUCTIONS,
+            input=[
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        specification.model_dump(mode="json"),
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "implementation_plan",
+                    "schema": ImplementationPlan.model_json_schema(),
+                    "strict": True,
+                }
+            },
+        )
+        output_text = getattr(response, "output_text", None)
+        if not isinstance(output_text, str):
+            raise ImplementationPlanningError("OpenAI returned no implementation plan")
+
+        try:
+            parsed = json.loads(output_text)
+        except json.JSONDecodeError as error:
+            raise ImplementationPlanningError(
+                "OpenAI returned invalid implementation plan JSON"
+            ) from error
+
+        try:
+            plan = ImplementationPlan.model_validate(parsed)
+            return plan.validate_traceability(specification)
+        except (ImplementationPlanValidationError, ValidationError) as error:
+            raise ImplementationPlanningError(
+                "OpenAI returned an implementation plan that failed validation"
+            ) from error
+
+    def _get_client(self) -> OpenAIAPIClient:
+        """Create the SDK client only when planning needs it."""
+        if self._client is not None:
+            return self._client
+        if not self._api_key:
+            raise ValueError("OPENAI_API_KEY must be configured")
+
+        from openai import OpenAI
+
+        self._client = OpenAI(api_key=self._api_key)
+        return self._client
