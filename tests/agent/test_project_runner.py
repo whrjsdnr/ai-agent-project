@@ -239,7 +239,9 @@ def test_project_runner_bootstraps_in_exact_order_without_phase_execution() -> N
         run.project_specification,
         project_plan,
     )
-    assert run.execution_state.status is ProjectExecutionStatus.READY
+    assert run.execution_state.status is ProjectExecutionStatus.AWAITING_PLAN_APPROVAL
+    assert run.plan_revision_state is not None
+    assert run.plan_revision_state.active_version == 1
     assert all(record.execution is None for record in run.execution_state.phase_records)
     assert all(
         record.progress_report is None for record in run.execution_state.phase_records

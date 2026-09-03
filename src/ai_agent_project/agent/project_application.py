@@ -6,9 +6,15 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict
 
 from ai_agent_project.agent.checkpoint import CheckpointDecision
+from ai_agent_project.agent.plan_revision import (
+    PlanReviewStatus,
+    PlanRevisionState,
+    ProjectPlanReviser,
+)
 from ai_agent_project.agent.project_execution import (
     ProjectExecutionService,
     ProjectExecutionState,
+    ProjectExecutionStatus,
 )
 from ai_agent_project.agent.project_runner import ProjectRun, ProjectRunner
 
@@ -23,6 +29,10 @@ class ProjectRunNotFoundError(ProjectRunError):
 
 class ProjectRunAlreadyExistsError(ProjectRunError):
     """Raised when store creation would overwrite an existing project run."""
+
+
+class ProjectPlanReviewError(ProjectRunError):
+    """Raised when a project plan review operation violates its lifecycle."""
 
 
 class ProjectRunStore(Protocol):
@@ -80,10 +90,12 @@ class ProjectApplicationService:
         project_runner: ProjectRunner,
         project_execution_service: ProjectExecutionService,
         store: ProjectRunStore,
+        plan_reviser: ProjectPlanReviser | None = None,
     ) -> None:
         self._project_runner = project_runner
         self._project_execution_service = project_execution_service
         self._store = store
+        self._plan_reviser = plan_reviser
 
     def create_project(
         self,
@@ -112,6 +124,12 @@ class ProjectApplicationService:
     def execute_current_phase(self, project_run_id: str) -> StoredProjectRun:
         """Execute the current phase and replace only the stored state snapshot."""
         project_run = self._require_project_run(project_run_id)
+        if project_run.plan_revision_state is None or (
+            project_run.plan_revision_state.status is not PlanReviewStatus.APPROVED
+        ):
+            raise ProjectPlanReviewError(
+                "Project plan must be approved before execution"
+            )
         execution_state = self._project_execution_service.execute_current_phase(
             project_run.execution_state,
             project_run.specification,
@@ -119,6 +137,75 @@ class ProjectApplicationService:
             project_run.project_plan,
         )
         updated_run = _with_execution_state(project_run, execution_state)
+        self._store.replace(project_run_id, updated_run)
+        return StoredProjectRun(id=project_run_id, project_run=updated_run)
+
+    def get_plan(self, project_run_id: str) -> PlanRevisionState:
+        """Return the immutable plan review history for one stored project run."""
+        revision_state = self._require_project_run(project_run_id).plan_revision_state
+        if revision_state is None:
+            raise ProjectPlanReviewError("Project run has no plan review state")
+        return revision_state
+
+    def revise_plan(self, project_run_id: str, feedback: str) -> StoredProjectRun:
+        """Replace the active pre-execution phase grouping without changing tasks."""
+        project_run = self._require_project_run(project_run_id)
+        revision_state = _revision_state(project_run)
+        _require_pre_execution_review(project_run, revision_state)
+        if not feedback.strip():
+            raise ProjectPlanReviewError("Plan revision feedback must not be blank")
+        if self._plan_reviser is None:
+            raise ProjectPlanReviewError("Project plan revision is not configured")
+        revised_plan = self._plan_reviser.revise(
+            project_run.project_specification,
+            revision_state.active_plan,
+            feedback,
+            project_run.workspace,
+        )
+        if (
+            revised_plan.implementation_plan
+            != revision_state.active_plan.implementation_plan
+        ):
+            raise ProjectPlanReviewError(
+                "A revised plan must preserve the implementation plan"
+            )
+        revised_plan.validate_against(project_run.project_specification)
+        revised_revisions = revision_state.revise(revised_plan, feedback)
+        execution_state = self._project_execution_service.start(
+            project_run.specification,
+            project_run.project_specification,
+            revised_plan,
+        ).model_copy(update={"status": ProjectExecutionStatus.AWAITING_PLAN_APPROVAL})
+        updated_run = project_run.model_copy(
+            update={
+                "project_plan": revised_plan,
+                "plan_revision_state": revised_revisions,
+                "execution_state": execution_state,
+            }
+        )
+        self._store.replace(project_run_id, updated_run)
+        return StoredProjectRun(id=project_run_id, project_run=updated_run)
+
+    def approve_plan(self, project_run_id: str) -> StoredProjectRun:
+        """Approve the active plan and make its first phase ready without executing."""
+        project_run = self._require_project_run(project_run_id)
+        revision_state = _revision_state(project_run)
+        if revision_state.status is PlanReviewStatus.APPROVED:
+            raise ProjectPlanReviewError("Project plan is already approved")
+        _require_pre_execution_review(project_run, revision_state)
+        approved_revisions = revision_state.approve()
+        execution_state = self._project_execution_service.start(
+            project_run.specification,
+            project_run.project_specification,
+            approved_revisions.active_plan,
+        )
+        updated_run = project_run.model_copy(
+            update={
+                "project_plan": approved_revisions.active_plan,
+                "plan_revision_state": approved_revisions,
+                "execution_state": execution_state,
+            }
+        )
         self._store.replace(project_run_id, updated_run)
         return StoredProjectRun(id=project_run_id, project_run=updated_run)
 
@@ -154,3 +241,23 @@ def _with_execution_state(
 ) -> ProjectRun:
     """Return a new ProjectRun snapshot without mutating the prior snapshot."""
     return project_run.model_copy(update={"execution_state": execution_state})
+
+
+def _revision_state(project_run: ProjectRun) -> PlanRevisionState:
+    if project_run.plan_revision_state is None:
+        raise ProjectPlanReviewError("Project run has no plan review state")
+    return project_run.plan_revision_state
+
+
+def _require_pre_execution_review(
+    project_run: ProjectRun,
+    revision_state: PlanRevisionState,
+) -> None:
+    if revision_state.status is PlanReviewStatus.APPROVED:
+        raise ProjectPlanReviewError("An approved project plan cannot be revised")
+    if any(
+        record.attempt_count for record in project_run.execution_state.phase_records
+    ):
+        raise ProjectPlanReviewError(
+            "Project plan cannot be revised after phase execution"
+        )

@@ -14,6 +14,7 @@ from ai_agent_project.agent.project import (
 from ai_agent_project.agent.project_application import (
     InMemoryProjectRunStore,
     ProjectApplicationService,
+    ProjectPlanReviewError,
     ProjectRunAlreadyExistsError,
     ProjectRunNotFoundError,
 )
@@ -105,6 +106,20 @@ class FakeProjectExecutionService:
         self._decide_outcome = decide_outcome
         self.execute_calls: list[tuple[object, ...]] = []
         self.decide_calls: list[tuple[object, ...]] = []
+        self.start_calls: list[tuple[object, ...]] = []
+
+    def start(self, *args: object) -> ProjectExecutionState:
+        self.start_calls.append(args)
+        plan = args[2]
+        assert isinstance(plan, ProjectPlan)
+        return ProjectExecutionState(
+            project_title=plan.project_title,
+            status=ProjectExecutionStatus.READY,
+            current_phase_id=plan.phases[0].id,
+            phase_records=tuple(
+                PhaseExecutionRecord(phase_id=phase.id) for phase in plan.phases
+            ),
+        )
 
     def execute_current_phase(self, *args: object) -> ProjectExecutionState:
         self.execute_calls.append(args)
@@ -137,11 +152,24 @@ class RecordingStore(InMemoryProjectRunStore):
         super().replace(project_run_id, project_run)
 
 
+class FakePlanReviser:
+    def __init__(self, plan: ProjectPlan | Exception) -> None:
+        self.plan_result = plan
+        self.calls: list[tuple[object, ...]] = []
+
+    def revise(self, *args: object) -> ProjectPlan:
+        self.calls.append(args)
+        if isinstance(self.plan_result, Exception):
+            raise self.plan_result
+        return self.plan_result
+
+
 def make_service(
     project_run: ProjectRun,
     *,
     execute_outcome: ProjectExecutionState | Exception | None = None,
     decide_outcome: ProjectExecutionState | Exception | None = None,
+    plan_reviser: FakePlanReviser | None = None,
 ) -> tuple[
     ProjectApplicationService,
     FakeProjectRunner,
@@ -159,6 +187,7 @@ def make_service(
             runner,  # type: ignore[arg-type]
             execution_service,  # type: ignore[arg-type]
             store,
+            plan_reviser,  # type: ignore[arg-type]
         ),
         runner,
         execution_service,
@@ -320,3 +349,77 @@ def test_bootstrap_failure_stores_nothing() -> None:
 
     assert runner.calls == [("project", None, None)]
     assert store.calls == []
+
+
+def test_plan_revision_resets_pre_execution_state_and_preserves_tasks() -> None:
+    original = make_project_run(ProjectExecutionStatus.AWAITING_PLAN_APPROVAL)
+    revised_plan = original.project_plan.model_copy(
+        update={
+            "phases": (
+                original.project_plan.phases[0].model_copy(
+                    update={"id": "PHASE-REVISED", "title": "Clearer feature phase"}
+                ),
+            )
+        }
+    )
+    reviser = FakePlanReviser(revised_plan)
+    service, _, execution_service, store = make_service(original, plan_reviser=reviser)
+    stored = service.create_project("project")
+    store.calls.clear()
+
+    revised = service.revise_plan(stored.id, "Clarify phase responsibilities.")
+
+    assert reviser.calls[0][1] is original.project_plan
+    assert revised.project_run.project_plan == revised_plan
+    assert revised.project_run.plan_revision_state.active_version == 2
+    assert (
+        revised.project_run.plan_revision_state.revisions[0].plan
+        is original.project_plan
+    )
+    assert revised.project_run.implementation_plan is original.implementation_plan
+    assert (
+        revised.project_run.execution_state.status
+        is ProjectExecutionStatus.AWAITING_PLAN_APPROVAL
+    )
+    assert [
+        record.phase_id for record in revised.project_run.execution_state.phase_records
+    ] == ["PHASE-REVISED"]
+    assert all(
+        record.attempt_count == 0
+        for record in revised.project_run.execution_state.phase_records
+    )
+    assert execution_service.start_calls
+    assert store.calls == ["get", "replace"]
+
+
+def test_plan_approval_makes_phase_ready_without_execution() -> None:
+    original = make_project_run(ProjectExecutionStatus.AWAITING_PLAN_APPROVAL)
+    service, _, execution_service, _ = make_service(original)
+    stored = service.create_project("project")
+
+    approved = service.approve_plan(stored.id)
+
+    assert approved.project_run.plan_revision_state.status.value == "approved"
+    assert approved.project_run.execution_state.status is ProjectExecutionStatus.READY
+    assert approved.project_run.execution_state.current_phase_id == "PHASE-001"
+    assert execution_service.execute_calls == []
+    with pytest.raises(ProjectPlanReviewError, match="approved"):
+        service.approve_plan(stored.id)
+    with pytest.raises(ProjectPlanReviewError, match="approved"):
+        service.revise_plan(stored.id, "Another layout")
+
+
+def test_execution_is_blocked_until_plan_approval_and_blank_feedback_is_rejected() -> (
+    None
+):
+    original = make_project_run(ProjectExecutionStatus.AWAITING_PLAN_APPROVAL)
+    reviser = FakePlanReviser(original.project_plan)
+    service, _, execution_service, _ = make_service(original, plan_reviser=reviser)
+    stored = service.create_project("project")
+
+    with pytest.raises(ProjectPlanReviewError, match="must be approved"):
+        service.execute_current_phase(stored.id)
+    with pytest.raises(ProjectPlanReviewError, match="must not be blank"):
+        service.revise_plan(stored.id, " ")
+    assert execution_service.execute_calls == []
+    assert reviser.calls == []

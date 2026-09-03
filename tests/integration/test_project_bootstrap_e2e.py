@@ -189,7 +189,7 @@ Acceptance criteria:
     current_phase = next(
         phase for phase in project_plan.phases if phase.id == state.current_phase_id
     )
-    assert state.status is ProjectExecutionStatus.READY
+    assert state.status is ProjectExecutionStatus.AWAITING_PLAN_APPROVAL
     assert state.current_phase_id is not None
     assert set(current_phase.depends_on) <= set(state.completed_phase_ids)
     assert state.completed_phase_ids == ()

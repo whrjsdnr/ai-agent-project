@@ -93,6 +93,20 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("project_run_id")
     status.add_argument("--json", action="store_true", dest="as_json")
 
+    plan = commands.add_parser("plan", help="Show the active project plan review")
+    plan.add_argument("project_run_id")
+
+    revise_plan = commands.add_parser(
+        "revise-plan", help="Revise the phase plan before approval"
+    )
+    revise_plan.add_argument("project_run_id")
+    revise_plan.add_argument("--note", required=True)
+
+    approve_plan = commands.add_parser(
+        "approve-plan", help="Approve the active project plan without executing"
+    )
+    approve_plan.add_argument("project_run_id")
+
     execute = commands.add_parser("execute", help="Execute exactly the current phase")
     execute.add_argument("project_run_id")
 
@@ -171,6 +185,21 @@ def _run_existing_project_command(
             _print_project_status(stored, workspace, output)
         return 0
 
+    if arguments.command == "plan":
+        _print_plan_review(service.get_plan(arguments.project_run_id), output)
+        return 0
+
+    if arguments.command == "revise-plan":
+        before = service.get_plan(arguments.project_run_id)
+        stored = service.revise_plan(arguments.project_run_id, arguments.note)
+        _print_plan_revision(before.active_version, stored, workspace, output)
+        return 0
+
+    if arguments.command == "approve-plan":
+        stored = service.approve_plan(arguments.project_run_id)
+        _print_plan_approval(stored, workspace, output)
+        return 0
+
     if arguments.command == "execute":
         stored = service.execute_current_phase(arguments.project_run_id)
         _print_execution_summary(stored, workspace, output)
@@ -224,6 +253,7 @@ def _print_project_summary(
     print(f"Project run: {stored.id}", file=output)
     print(f"Project: {stored.project_run.project_specification.title}", file=output)
     print(f"Status: {state.status}", file=output)
+    _print_plan_line(stored, output)
     print(f"Current phase: {state.current_phase_id or '-'}", file=output)
     print(f"Phases: {len(stored.project_run.project_plan.phases)}", file=output)
     print(f"Workspace: {workspace}", file=output)
@@ -238,6 +268,7 @@ def _print_project_status(
     print(f"Project: {stored.project_run.project_specification.title}", file=output)
     print(f"Run ID: {stored.id}", file=output)
     print(f"Status: {state.status}", file=output)
+    _print_plan_line(stored, output)
     print(f"Workspace: {workspace}", file=output)
     print(f"Current phase: {state.current_phase_id or '-'}", file=output)
     print("Phases:", file=output)
@@ -313,4 +344,66 @@ def _print_decision_summary(
     state = stored.project_run.execution_state
     print(f"Project status: {state.status}", file=output)
     print(f"Current phase: {state.current_phase_id or '-'}", file=output)
+    print(f"Workspace: {workspace}", file=output)
+
+
+def _print_plan_line(stored: StoredProjectRun, output: TextIO) -> None:
+    revision_state = stored.project_run.plan_revision_state
+    if revision_state is not None:
+        print(
+            f"Plan: version {revision_state.active_version} ({revision_state.status})",
+            file=output,
+        )
+
+
+def _print_plan_review(revision_state: object, output: TextIO) -> None:
+    from ai_agent_project.agent.plan_revision import PlanRevisionState
+
+    if not isinstance(revision_state, PlanRevisionState):
+        raise CliError("Stored project plan review is invalid")
+    print(f"Plan version: {revision_state.active_version}", file=output)
+    print(f"Review status: {revision_state.status}", file=output)
+    print("Phases:", file=output)
+    for phase in revision_state.active_plan.phases:
+        print(f"- {phase.id}: {phase.title} — {phase.objective}", file=output)
+    if len(revision_state.revisions) > 1:
+        print("Revision history:", file=output)
+        for revision in revision_state.revisions:
+            feedback = revision.feedback or "initial plan"
+            print(f"- v{revision.version}: {feedback}", file=output)
+
+
+def _print_plan_revision(
+    previous_version: int,
+    stored: StoredProjectRun,
+    workspace: Path,
+    output: TextIO,
+) -> None:
+    revision_state = stored.project_run.plan_revision_state
+    if revision_state is None:
+        raise CliError("Revised project is missing plan review state")
+    print(
+        f"Plan revised: v{previous_version} -> v{revision_state.active_version}",
+        file=output,
+    )
+    print(f"Review status: {revision_state.status}", file=output)
+    for phase in revision_state.active_plan.phases:
+        print(f"- {phase.id}: {phase.title}", file=output)
+    print(f"Workspace: {workspace}", file=output)
+
+
+def _print_plan_approval(
+    stored: StoredProjectRun,
+    workspace: Path,
+    output: TextIO,
+) -> None:
+    revision_state = stored.project_run.plan_revision_state
+    if revision_state is None:
+        raise CliError("Approved project is missing plan review state")
+    print(f"Project status: {stored.project_run.execution_state.status}", file=output)
+    print(f"Plan version: {revision_state.active_version}", file=output)
+    print(
+        f"Current phase: {stored.project_run.execution_state.current_phase_id or '-'}",
+        file=output,
+    )
     print(f"Workspace: {workspace}", file=output)

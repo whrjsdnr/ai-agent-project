@@ -27,6 +27,7 @@ from ai_agent_project.agent.specification import Specification
 class ProjectExecutionStatus(StrEnum):
     """Caller-controlled lifecycle of an in-memory project execution."""
 
+    AWAITING_PLAN_APPROVAL = "awaiting_plan_approval"
     READY = "ready"
     RUNNING = "running"
     AWAITING_CHECKPOINT = "awaiting_checkpoint"

@@ -1,8 +1,9 @@
 """Provider-neutral bootstrap from source text to a ready project execution."""
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ai_agent_project.agent.plan import ImplementationPlan, ImplementationPlanner
+from ai_agent_project.agent.plan_revision import PlanRevisionState
 from ai_agent_project.agent.project import (
     ProjectPlan,
     ProjectPlanner,
@@ -11,6 +12,7 @@ from ai_agent_project.agent.project import (
 from ai_agent_project.agent.project_execution import (
     ProjectExecutionService,
     ProjectExecutionState,
+    ProjectExecutionStatus,
 )
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.specification_parser import SpecificationParser
@@ -28,6 +30,23 @@ class ProjectRun(BaseModel):
     implementation_plan: ImplementationPlan
     project_plan: ProjectPlan
     execution_state: ProjectExecutionState
+    plan_revision_state: PlanRevisionState | None = None
+
+    @model_validator(mode="after")
+    def synchronize_active_plan(self) -> "ProjectRun":
+        """Keep the legacy active plan field aligned with revision history."""
+        revision_state = self.plan_revision_state
+        if revision_state is None:
+            revision_state = PlanRevisionState.from_plan(self.project_plan)
+            if (
+                self.execution_state.status
+                is not ProjectExecutionStatus.AWAITING_PLAN_APPROVAL
+            ):
+                revision_state = revision_state.approve()
+        if revision_state.active_plan != self.project_plan:
+            raise ValueError("ProjectRun project_plan must match the active revision")
+        object.__setattr__(self, "plan_revision_state", revision_state)
+        return self
 
 
 class ProjectRunner:
@@ -82,11 +101,16 @@ class ProjectRunner:
             project_specification,
             project_plan,
         )
+        revision_state = PlanRevisionState.from_plan(project_plan)
+        awaiting_plan_approval = execution_state.model_copy(
+            update={"status": ProjectExecutionStatus.AWAITING_PLAN_APPROVAL}
+        )
         return ProjectRun(
             specification=specification,
             project_specification=project_specification,
             workspace=workspace,
             implementation_plan=implementation_plan,
             project_plan=project_plan,
-            execution_state=execution_state,
+            execution_state=awaiting_plan_approval,
+            plan_revision_state=revision_state,
         )

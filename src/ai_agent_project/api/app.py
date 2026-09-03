@@ -19,9 +19,11 @@ from ai_agent_project.agent.coding_service import (
 )
 from ai_agent_project.agent.phase_execution import PhaseExecutionService
 from ai_agent_project.agent.plan import ImplementationPlan
+from ai_agent_project.agent.plan_revision import PlanRevisionState
 from ai_agent_project.agent.project_application import (
     InMemoryProjectRunStore,
     ProjectApplicationService,
+    ProjectPlanReviewError,
     ProjectRunAlreadyExistsError,
     ProjectRunNotFoundError,
     ProjectRunStore,
@@ -36,6 +38,9 @@ from ai_agent_project.agent.workspace import FilesystemWorkspaceInspector
 from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
 from ai_agent_project.llm.providers.openai import OpenAIClient
 from ai_agent_project.llm.providers.openai_planner import OpenAIImplementationPlanner
+from ai_agent_project.llm.providers.openai_project_plan_reviser import (
+    OpenAIProjectPlanReviser,
+)
 from ai_agent_project.llm.providers.openai_project_planner import OpenAIProjectPlanner
 from ai_agent_project.llm.providers.openai_specification import (
     OpenAISpecificationParser,
@@ -124,6 +129,19 @@ class ProjectDecisionRequest(BaseModel):
     note: str | None = None
 
 
+class ProjectPlanRevisionRequest(BaseModel):
+    """Request body for one pre-execution plan revision."""
+
+    feedback: str
+
+    @field_validator("feedback")
+    @classmethod
+    def reject_blank_feedback(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("feedback must not be blank")
+        return value
+
+
 def _default_workspace_root() -> Path:
     """Return the project root containing the source tree."""
     return Path(__file__).resolve().parents[3]
@@ -186,6 +204,7 @@ def create_default_project_application_service(
         project_runner,
         project_execution_service,
         store if store is not None else InMemoryProjectRunStore(),
+        OpenAIProjectPlanReviser(),
     )
 
 
@@ -263,6 +282,63 @@ def create_app(
                 detail="Project run not found.",
             ) from error
 
+    @app.get(
+        "/v1/project-runs/{project_run_id}/plan",
+        response_model=PlanRevisionState,
+    )
+    def get_project_plan(project_run_id: str) -> PlanRevisionState:
+        """Return immutable plan review history without changing project state."""
+        try:
+            return project_application_service.get_plan(project_run_id)
+        except ProjectRunNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project run not found.",
+            ) from error
+
+    @app.post(
+        "/v1/project-runs/{project_run_id}/plan/revisions",
+        response_model=StoredProjectRun,
+    )
+    def revise_project_plan(
+        project_run_id: str,
+        request: ProjectPlanRevisionRequest,
+    ) -> StoredProjectRun:
+        """Persist a revised phase grouping before plan approval."""
+        try:
+            return project_application_service.revise_plan(
+                project_run_id, request.feedback
+            )
+        except ProjectRunNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project run not found.",
+            ) from error
+        except (ProjectPlanReviewError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Project plan review conflict.",
+            ) from error
+
+    @app.post(
+        "/v1/project-runs/{project_run_id}/plan/approve",
+        response_model=StoredProjectRun,
+    )
+    def approve_project_plan(project_run_id: str) -> StoredProjectRun:
+        """Approve a plan without executing its first phase."""
+        try:
+            return project_application_service.approve_plan(project_run_id)
+        except ProjectRunNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project run not found.",
+            ) from error
+        except (ProjectPlanReviewError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Project plan review conflict.",
+            ) from error
+
     @app.post(
         "/v1/project-runs/{project_run_id}/execute",
         response_model=StoredProjectRun,
@@ -276,7 +352,7 @@ def create_app(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project run not found.",
             ) from error
-        except ValueError as error:
+        except (ProjectPlanReviewError, ValueError) as error:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Project lifecycle conflict.",

@@ -73,7 +73,7 @@ Acceptance criteria:
     created_run = created_body["project_run"]
     created_state = created_run["execution_state"]
     project_phases = created_run["project_plan"]["phases"]
-    assert created_state["status"] == "ready"
+    assert created_state["status"] == "awaiting_plan_approval"
     assert created_state["current_phase_id"] is not None
     assert len(project_phases) >= 2, (
         "This checkpoint E2E requires at least two LLM-planned phases; "
@@ -97,6 +97,34 @@ Acceptance criteria:
         fetched_ready.json()["project_run"]["execution_state"]["current_phase_id"]
         == phase_1_id
     )
+
+    plan_v1 = client.get(f"/v1/project-runs/{project_run_id}/plan")
+    assert plan_v1.status_code == 200
+    assert plan_v1.json()["active_version"] == 1
+    revised = client.post(
+        f"/v1/project-runs/{project_run_id}/plan/revisions",
+        json={
+            "feedback": (
+                "Move automated tests before documentation and make phase "
+                "responsibilities clearer."
+            )
+        },
+    )
+    assert revised.status_code == 200
+    revised_run = revised.json()["project_run"]
+    assert revised_run["plan_revision_state"]["active_version"] == 2
+    assert revised_run["plan_revision_state"]["status"] == "awaiting_approval"
+    assert revised_run["implementation_plan"] == created_run["implementation_plan"]
+    assert revised_run["execution_state"]["status"] == "awaiting_plan_approval"
+    assert all(
+        record["attempt_count"] == 0
+        for record in revised_run["execution_state"]["phase_records"]
+    )
+    phase_1_id = revised_run["execution_state"]["current_phase_id"]
+
+    approved_plan = client.post(f"/v1/project-runs/{project_run_id}/plan/approve")
+    assert approved_plan.status_code == 200
+    assert approved_plan.json()["project_run"]["execution_state"]["status"] == "ready"
 
     phase_1_executed = client.post(f"/v1/project-runs/{project_run_id}/execute")
     assert phase_1_executed.status_code == 200

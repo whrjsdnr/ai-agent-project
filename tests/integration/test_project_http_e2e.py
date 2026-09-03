@@ -61,7 +61,7 @@ Acceptance criteria:
     created_body = created.json()
     project_run_id = created_body["id"]
     created_state = created_body["project_run"]["execution_state"]
-    assert created_state["status"] == "ready"
+    assert created_state["status"] == "awaiting_plan_approval"
     assert created_state["current_phase_id"] is not None
     assert created_state["completed_phase_ids"] == []
     assert all(
@@ -82,6 +82,10 @@ Acceptance criteria:
         fetched_ready.json()["project_run"]["execution_state"]["current_phase_id"]
         == created_state["current_phase_id"]
     )
+
+    approved_plan = client.post(f"/v1/project-runs/{project_run_id}/plan/approve")
+    assert approved_plan.status_code == 200
+    assert approved_plan.json()["project_run"]["execution_state"]["status"] == "ready"
 
     executed = client.post(f"/v1/project-runs/{project_run_id}/execute")
 

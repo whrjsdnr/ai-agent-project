@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from ai_agent_project.agent.checkpoint import CheckpointDecision
 from ai_agent_project.agent.plan import ImplementationPlan
+from ai_agent_project.agent.plan_revision import PlanRevisionState
 from ai_agent_project.agent.project import (
     ProjectPhase,
     ProjectPlan,
@@ -86,6 +87,9 @@ class FakeProjectApplicationService:
         self.get_calls: list[str] = []
         self.execute_calls: list[str] = []
         self.decision_calls: list[tuple[str, CheckpointDecision, str | None]] = []
+        self.plan_calls: list[str] = []
+        self.revision_calls: list[tuple[str, str]] = []
+        self.approval_calls: list[str] = []
         self.get_error: Exception | None = None
         self.execute_error: Exception | None = None
         self.decision_error: Exception | None = None
@@ -111,6 +115,19 @@ class FakeProjectApplicationService:
         if self.execute_error:
             raise self.execute_error
         return self.execute_result
+
+    def get_plan(self, project_run_id: str) -> PlanRevisionState:
+        self.plan_calls.append(project_run_id)
+        assert self.created.plan_revision_state is not None
+        return self.created.plan_revision_state
+
+    def revise_plan(self, project_run_id: str, feedback: str) -> StoredProjectRun:
+        self.revision_calls.append((project_run_id, feedback))
+        return StoredProjectRun(id=project_run_id, project_run=self.created)
+
+    def approve_plan(self, project_run_id: str) -> StoredProjectRun:
+        self.approval_calls.append(project_run_id)
+        return StoredProjectRun(id=project_run_id, project_run=self.created)
 
     def decide_current_phase(
         self,
@@ -244,6 +261,34 @@ def test_decision_endpoints_forward_all_decisions_without_auto_execution() -> No
             json={"decision": "stop"},
         ).status_code
         == 409
+    )
+
+
+def test_plan_review_endpoints_delegate_without_phase_execution() -> None:
+    service = FakeProjectApplicationService()
+    client = make_client(service)
+
+    plan = client.get("/v1/project-runs/run-1/plan")
+    revised = client.post(
+        "/v1/project-runs/run-1/plan/revisions",
+        json={"feedback": "Clarify phase responsibilities."},
+    )
+    approved = client.post("/v1/project-runs/run-1/plan/approve")
+
+    assert plan.status_code == 200
+    assert plan.json()["active_version"] == 1
+    assert revised.status_code == 200
+    assert approved.status_code == 200
+    assert service.plan_calls == ["run-1"]
+    assert service.revision_calls == [("run-1", "Clarify phase responsibilities.")]
+    assert service.approval_calls == ["run-1"]
+    assert service.execute_calls == []
+    assert (
+        client.post(
+            "/v1/project-runs/run-1/plan/revisions",
+            json={"feedback": " "},
+        ).status_code
+        == 422
     )
 
 

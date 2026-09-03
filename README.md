@@ -376,6 +376,27 @@ ai-agent project stop <RUN_ID> \
 ai-agent project create plan.md --workspace ./workspace
 ```
 
+새 Project Run은 즉시 실행되지 않고 `awaiting_plan_approval` 상태가 됩니다.
+먼저 생성된 plan을 검토합니다.
+
+```bash
+ai-agent project plan <RUN_ID>
+```
+
+Phase 구조나 책임을 조정하려면, 기존 requirement와 implementation task를 유지한 채
+plan만 반복해서 수정할 수 있습니다.
+
+```bash
+ai-agent project revise-plan <RUN_ID> \
+  --note "Move automated tests before documentation and clarify phase responsibilities."
+```
+
+수정이 끝나면 명시적으로 plan을 승인합니다. 이 명령은 Phase를 실행하지 않습니다.
+
+```bash
+ai-agent project approve-plan <RUN_ID>
+```
+
 ```bash
 ai-agent project status <RUN_ID>
 ```
@@ -411,6 +432,11 @@ ai-agent project status <RUN_ID>
 ```
 
 에서 프로젝트 완료 상태를 확인합니다.
+
+`revise-plan`은 아직 실행되지 않은 project plan의 phase grouping만 변경합니다.
+새 requirement 또는 implementation task가 필요한 요청은 향후 Specification Revision의
+범위입니다. 반면 `request-changes`는 이미 실행된 현재 Phase의 checkpoint에서 구현 변경을
+요청하는 별도 lifecycle 동작입니다.
 
 ---
 

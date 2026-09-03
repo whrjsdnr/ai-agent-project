@@ -92,7 +92,7 @@ def test_create_get_round_trip_reopens_and_preserves_workspace(tmp_path) -> None
     workspace.mkdir()
     store_root = tmp_path / "runs"
     run_id = str(uuid4())
-    original = make_project_run()
+    original = make_project_run(ProjectExecutionStatus.AWAITING_PLAN_APPROVAL)
 
     FileProjectRunStore(store_root, workspace_root=workspace).create(run_id, original)
     reopened = FileProjectRunStore(store_root)
@@ -114,6 +114,31 @@ def test_replace_persists_whole_new_snapshot(tmp_path) -> None:
     store.replace(run_id, replacement)
 
     assert FileProjectRunStore(tmp_path / "runs").get(run_id) == replacement
+
+
+def test_plan_revision_history_and_approval_survive_reopen(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store_root = tmp_path / "runs"
+    run_id = str(uuid4())
+    original = make_project_run(ProjectExecutionStatus.AWAITING_PLAN_APPROVAL)
+    revisions = original.plan_revision_state.revise(
+        original.project_plan, "Clarify phase responsibilities."
+    ).approve()
+    revised = original.model_copy(update={"plan_revision_state": revisions})
+
+    FileProjectRunStore(store_root, workspace_root=workspace).create(run_id, original)
+    FileProjectRunStore(store_root).replace(run_id, revised)
+    reopened = FileProjectRunStore(store_root)
+
+    loaded = reopened.get(run_id)
+    assert loaded.plan_revision_state.active_version == 2
+    assert loaded.plan_revision_state.status.value == "approved"
+    assert (
+        loaded.plan_revision_state.revisions[1].feedback
+        == "Clarify phase responsibilities."
+    )
+    assert reopened.workspace_root_for(run_id) == workspace.resolve()
 
 
 def test_duplicate_and_missing_store_operations_are_rejected(tmp_path) -> None:
