@@ -51,7 +51,7 @@ class FilesystemWorkspaceInspector:
         paths: list[str] = []
         for candidate in sorted(self._workspace_root.rglob("*")):
             relative = candidate.relative_to(self._workspace_root)
-            if any(part in _IGNORED_DIRECTORIES for part in relative.parts):
+            if is_workspace_ignored_path(relative):
                 continue
             if _is_secret_env_file(relative):
                 continue
@@ -70,4 +70,14 @@ class FilesystemWorkspaceInspector:
 def _is_secret_env_file(path: Path) -> bool:
     return path.name == ".env" or (
         path.name.startswith(".env.") and path.name != ".env.example"
+    )
+
+
+def is_workspace_ignored_path(path: Path) -> bool:
+    """Return whether a relative path is generated, cached, or secret metadata."""
+    return (
+        any(part in _IGNORED_DIRECTORIES for part in path.parts)
+        or path.name.endswith(".pyc")
+        or path.name == ".coverage"
+        or _is_secret_env_file(path)
     )

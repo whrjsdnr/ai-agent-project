@@ -438,6 +438,24 @@ ai-agent project status <RUN_ID>
 범위입니다. 반면 `request-changes`는 이미 실행된 현재 Phase의 checkpoint에서 구현 변경을
 요청하는 별도 lifecycle 동작입니다.
 
+## Existing Project Upgrade
+
+기존 코드베이스는 새 프로젝트와 별도로 명시적인 upgrade run으로 시작합니다. 이 명령은
+workspace를 분석하고 upgrade specification, implementation plan, phase plan을 만들지만
+파일을 수정하거나 phase를 실행하지 않습니다.
+
+```bash
+ai-agent project upgrade upgrade.md --workspace ~/projects/todo-api
+ai-agent project analysis <RUN_ID>
+ai-agent project plan <RUN_ID>
+ai-agent project revise-plan <RUN_ID> --note "Separate migration work from API changes."
+ai-agent project approve-plan <RUN_ID>
+ai-agent project execute <RUN_ID>
+```
+
+Upgrade plan revision은 기존 implementation task의 phase 구성만 바꿉니다. 새로운 기능
+요구사항을 추가하는 specification revision은 아직 지원하지 않습니다.
+
 ---
 
 # Persistent CLI State

@@ -53,4 +53,10 @@ def test_implementation_plan_schema_normalizes_nested_tasks() -> None:
     assert task["required"] == list(task["properties"])
     assert "summary" in schema["required"]
     assert _allows_null(schema["properties"]["summary"])
+    assert "required_file_contents" not in schema["required"]
+    assert "allowed_changed_files" not in schema["required"]
+    assert "required_file_contents" in task["required"]
+    assert "allowed_changed_files" in task["required"]
+    assert task["properties"]["required_file_contents"]["type"] == "array"
+    assert task["properties"]["allowed_changed_files"]["type"] == "array"
     _assert_strict_objects(schema)

@@ -23,6 +23,14 @@ from ai_agent_project.agent.project_execution import (
 )
 from ai_agent_project.agent.project_runner import ProjectRun
 from ai_agent_project.agent.specification import Specification
+from ai_agent_project.agent.upgrade import (
+    BaselineStatus,
+    BaselineValidation,
+    UpgradeContext,
+    UpgradeImpact,
+    UpgradeRequest,
+    UpgradeSpecification,
+)
 from ai_agent_project.agent.workspace import WorkspaceSnapshot
 
 
@@ -90,6 +98,8 @@ class FakeProjectApplicationService:
         self.plan_calls: list[str] = []
         self.revision_calls: list[tuple[str, str]] = []
         self.approval_calls: list[str] = []
+        self.upgrade_calls: list[tuple[str, str | None]] = []
+        self.analysis_calls: list[str] = []
         self.get_error: Exception | None = None
         self.execute_error: Exception | None = None
         self.decision_error: Exception | None = None
@@ -103,6 +113,27 @@ class FakeProjectApplicationService:
     ) -> StoredProjectRun:
         self.create_calls.append((source_text, project_title, source_format))
         return StoredProjectRun(id="run-1", project_run=self.created)
+
+    def create_upgrade_project(
+        self, request_text: str, *, project_title: str | None = None
+    ) -> StoredProjectRun:
+        self.upgrade_calls.append((request_text, project_title))
+        return StoredProjectRun(id="upgrade-1", project_run=self.created)
+
+    def get_analysis(self, project_run_id: str) -> UpgradeContext:
+        self.analysis_calls.append(project_run_id)
+        return UpgradeContext(
+            request=UpgradeRequest(request_text="Add filtering."),
+            codebase_analysis={"summary": "Existing API"},
+            upgrade_specification=UpgradeSpecification(
+                title="Upgrade",
+                objective="Add filtering.",
+                current_system_summary="Existing API",
+                requirements=({"id": "UPG-REQ-001", "description": "Add filtering."},),
+                impact=UpgradeImpact(),
+            ),
+            baseline_validation=BaselineValidation(status=BaselineStatus.UNAVAILABLE),
+        )
 
     def get_project(self, project_run_id: str) -> StoredProjectRun:
         self.get_calls.append(project_run_id)
@@ -175,6 +206,24 @@ def test_create_project_run_rejects_blank_source_text() -> None:
 
     assert response.status_code == 422
     assert service.create_calls == []
+
+
+def test_upgrade_create_and_analysis_use_application_service() -> None:
+    service = FakeProjectApplicationService()
+    client = make_client(service)
+
+    created = client.post(
+        "/v1/project-runs/upgrades",
+        json={"request_text": "Add filtering.", "project_title": "Todo upgrade"},
+    )
+    assert created.status_code == 201
+    assert created.json()["id"] == "upgrade-1"
+    assert service.upgrade_calls == [("Add filtering.", "Todo upgrade")]
+
+    analysis = client.get("/v1/project-runs/upgrade-1/analysis")
+    assert analysis.status_code == 200
+    assert analysis.json()["codebase_analysis"]["summary"] == "Existing API"
+    assert service.analysis_calls == ["upgrade-1"]
 
 
 def test_get_project_run_is_read_only_and_maps_missing_to_404() -> None:

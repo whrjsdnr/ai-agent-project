@@ -79,18 +79,25 @@ class PhaseExecutionService:
         scoped_specification = build_phase_specification(specification, phase)
         scoped_plan = build_phase_implementation_plan(project_plan, phase)
         scoped_plan.validate_traceability(scoped_specification)
+        workspace_before = _capture_workspace_state(self._acceptance_validator)
 
         agent_run = self._agent_service.run(
             build_phase_coding_instruction(phase, scoped_specification, scoped_plan)
         )
-        acceptance_report = self._validate(scoped_specification, scoped_plan, agent_run)
+        acceptance_report = self._validate(
+            scoped_specification, scoped_plan, agent_run, workspace_before
+        )
         repair_attempts: list[RepairAttempt] = []
 
         for attempt in range(1, self._max_repair_attempts + 1):
             failed_requirements = _failed_requirement_ids(
                 acceptance_report, phase.requirement_ids
             )
-            if not failed_requirements or agent_run.status is AgentStatus.FAILED:
+            if (
+                not failed_requirements
+                or agent_run.status is AgentStatus.FAILED
+                or _has_non_repairable_policy_failure(acceptance_report)
+            ):
                 break
 
             repair_instruction = build_repair_instruction(
@@ -103,7 +110,7 @@ class PhaseExecutionService:
                 _phase_prefix(phase) + "\n\n" + repair_instruction
             )
             acceptance_report = self._validate(
-                scoped_specification, scoped_plan, agent_run
+                scoped_specification, scoped_plan, agent_run, workspace_before
             )
             repair_attempts.append(
                 RepairAttempt(
@@ -130,8 +137,18 @@ class PhaseExecutionService:
         specification: Specification,
         plan: ImplementationPlan,
         agent_run: AgentState,
+        workspace_before: object | None = None,
     ) -> AcceptanceReport:
+        if workspace_before is not None:
+            return self._acceptance_validator.validate(  # type: ignore[call-arg]
+                specification, plan, agent_run, workspace_before=workspace_before
+            )
         return self._acceptance_validator.validate(specification, plan, agent_run)
+
+
+def _capture_workspace_state(validator: AcceptanceValidator) -> object | None:
+    capture = getattr(validator, "capture_workspace_state", None)
+    return capture() if callable(capture) else None
 
 
 def build_phase_specification(
@@ -255,6 +272,15 @@ def _failed_requirement_ids(
         if requirement.requirement_id in phase_ids
         and requirement.status is AcceptanceStatus.FAILED
     ]
+
+
+def _has_non_repairable_policy_failure(report: AcceptanceReport) -> bool:
+    """Do not ask an agent to repair deterministic workspace-policy evidence."""
+    return any(
+        "Disallowed phase-local changed files" in evidence
+        for requirement in report.requirements
+        for evidence in requirement.evidence
+    )
 
 
 def _phase_status(

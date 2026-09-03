@@ -25,18 +25,23 @@ from ai_agent_project.agent.project_application import (
     ProjectApplicationService,
     ProjectPlanReviewError,
     ProjectRunAlreadyExistsError,
+    ProjectRunError,
     ProjectRunNotFoundError,
     ProjectRunStore,
     StoredProjectRun,
 )
 from ai_agent_project.agent.project_execution import ProjectExecutionService
-from ai_agent_project.agent.project_runner import ProjectRunner
+from ai_agent_project.agent.project_runner import ProjectRunner, UpgradeProjectRunner
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
+from ai_agent_project.agent.upgrade import UpgradeContext
 from ai_agent_project.agent.workspace import FilesystemWorkspaceInspector
 from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
 from ai_agent_project.llm.providers.openai import OpenAIClient
+from ai_agent_project.llm.providers.openai_codebase_analyzer import (
+    OpenAICodebaseAnalyzer,
+)
 from ai_agent_project.llm.providers.openai_planner import OpenAIImplementationPlanner
 from ai_agent_project.llm.providers.openai_project_plan_reviser import (
     OpenAIProjectPlanReviser,
@@ -45,6 +50,7 @@ from ai_agent_project.llm.providers.openai_project_planner import OpenAIProjectP
 from ai_agent_project.llm.providers.openai_specification import (
     OpenAISpecificationParser,
 )
+from ai_agent_project.llm.providers.openai_upgrade_analyzer import OpenAIUpgradeAnalyzer
 from ai_agent_project.tools.calculator import CalculatorTool
 from ai_agent_project.tools.file import FileTool
 from ai_agent_project.tools.registry import ToolRegistry
@@ -142,6 +148,18 @@ class ProjectPlanRevisionRequest(BaseModel):
         return value
 
 
+class CreateUpgradeProjectRequest(BaseModel):
+    request_text: str
+    project_title: str | None = None
+
+    @field_validator("request_text")
+    @classmethod
+    def reject_blank_request(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("request_text must not be blank")
+        return value
+
+
 def _default_workspace_root() -> Path:
     """Return the project root containing the source tree."""
     return Path(__file__).resolve().parents[3]
@@ -200,11 +218,20 @@ def create_default_project_application_service(
         OpenAIProjectPlanner(),
         project_execution_service,
     )
+    upgrade_runner = UpgradeProjectRunner(
+        FilesystemWorkspaceInspector(resolved_workspace_root),
+        OpenAICodebaseAnalyzer(),
+        OpenAIUpgradeAnalyzer(),
+        OpenAIImplementationPlanner(),
+        OpenAIProjectPlanner(),
+        project_execution_service,
+    )
     return ProjectApplicationService(
         project_runner,
         project_execution_service,
         store if store is not None else InMemoryProjectRunStore(),
         OpenAIProjectPlanReviser(),
+        upgrade_runner,
     )
 
 
@@ -269,6 +296,39 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Project run already exists.",
+            ) from error
+
+    @app.post(
+        "/v1/project-runs/upgrades",
+        response_model=StoredProjectRun,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_upgrade_project(
+        request: CreateUpgradeProjectRequest,
+    ) -> StoredProjectRun:
+        try:
+            return project_application_service.create_upgrade_project(
+                request.request_text, project_title=request.project_title
+            )
+        except ProjectRunError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Upgrade project creation failed.",
+            ) from error
+
+    @app.get(
+        "/v1/project-runs/{project_run_id}/analysis", response_model=UpgradeContext
+    )
+    def get_upgrade_analysis(project_run_id: str) -> UpgradeContext:
+        try:
+            return project_application_service.get_analysis(project_run_id)
+        except ProjectRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Project run not found."
+            ) from error
+        except ProjectRunError as error:
+            raise HTTPException(
+                status_code=409, detail="Upgrade analysis unavailable."
             ) from error
 
     @app.get("/v1/project-runs/{project_run_id}", response_model=StoredProjectRun)

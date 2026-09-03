@@ -55,6 +55,10 @@ def run_cli(
             return _create_project(
                 arguments, current_directory, resolved_store_root, build_service, output
             )
+        if arguments.command == "upgrade":
+            return _create_upgrade(
+                arguments, current_directory, resolved_store_root, build_service, output
+            )
         return _run_existing_project_command(
             arguments,
             resolved_store_root,
@@ -89,6 +93,13 @@ def _build_parser() -> argparse.ArgumentParser:
     create.add_argument("--workspace", type=Path, help="Workspace to plan and execute")
     create.add_argument("--title", help="Optional project title override")
 
+    upgrade = commands.add_parser(
+        "upgrade", help="Bootstrap an existing-project upgrade"
+    )
+    upgrade.add_argument("request_file", type=Path)
+    upgrade.add_argument("--workspace", type=Path, required=True)
+    upgrade.add_argument("--title", help="Optional project title override")
+
     status = commands.add_parser("status", help="Show a stored project run")
     status.add_argument("project_run_id")
     status.add_argument("--json", action="store_true", dest="as_json")
@@ -106,6 +117,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "approve-plan", help="Approve the active project plan without executing"
     )
     approve_plan.add_argument("project_run_id")
+
+    analysis = commands.add_parser("analysis", help="Show saved upgrade analysis")
+    analysis.add_argument("project_run_id")
 
     execute = commands.add_parser("execute", help="Execute exactly the current phase")
     execute.add_argument("project_run_id")
@@ -155,6 +169,33 @@ def _create_project(
     return 0
 
 
+def _create_upgrade(
+    arguments: argparse.Namespace,
+    cwd: Path,
+    store_root: Path,
+    build_service: ProjectServiceBuilder,
+    output: TextIO,
+) -> int:
+    request_path = _resolve_path(arguments.request_file, cwd)
+    try:
+        request_text = request_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise CliError(
+            f"Could not read upgrade request file: {request_path}"
+        ) from error
+    if not request_text.strip():
+        raise CliError("Upgrade request file must not be empty")
+    workspace = _resolve_path(arguments.workspace, cwd)
+    if not workspace.is_dir():
+        raise CliError(f"Workspace is not a directory: {workspace}")
+    store = FileProjectRunStore(store_root, workspace_root=workspace)
+    stored = build_service(workspace, store).create_upgrade_project(
+        request_text, project_title=arguments.title
+    )
+    _print_project_summary(stored, workspace, output)
+    return 0
+
+
 def _run_existing_project_command(
     arguments: argparse.Namespace,
     store_root: Path,
@@ -187,6 +228,10 @@ def _run_existing_project_command(
 
     if arguments.command == "plan":
         _print_plan_review(service.get_plan(arguments.project_run_id), output)
+        return 0
+
+    if arguments.command == "analysis":
+        _print_upgrade_analysis(service.get_analysis(arguments.project_run_id), output)
         return 0
 
     if arguments.command == "revise-plan":
@@ -252,6 +297,7 @@ def _print_project_summary(
     state = stored.project_run.execution_state
     print(f"Project run: {stored.id}", file=output)
     print(f"Project: {stored.project_run.project_specification.title}", file=output)
+    print(f"Mode: {stored.project_run.mode}", file=output)
     print(f"Status: {state.status}", file=output)
     _print_plan_line(stored, output)
     print(f"Current phase: {state.current_phase_id or '-'}", file=output)
@@ -267,6 +313,7 @@ def _print_project_status(
     state = stored.project_run.execution_state
     print(f"Project: {stored.project_run.project_specification.title}", file=output)
     print(f"Run ID: {stored.id}", file=output)
+    print(f"Mode: {stored.project_run.mode}", file=output)
     print(f"Status: {state.status}", file=output)
     _print_plan_line(stored, output)
     print(f"Workspace: {workspace}", file=output)
@@ -407,3 +454,26 @@ def _print_plan_approval(
         file=output,
     )
     print(f"Workspace: {workspace}", file=output)
+
+
+def _print_upgrade_analysis(context: object, output: TextIO) -> None:
+    """Render compact persisted upgrade context without dumping workspace contents."""
+    from ai_agent_project.agent.upgrade import UpgradeContext
+
+    if not isinstance(context, UpgradeContext):
+        raise CliError("Stored upgrade analysis is invalid")
+    analysis = context.codebase_analysis
+    impact = context.upgrade_specification.impact
+    print(f"Project type: {analysis.project_type or '-'}", file=output)
+    print(f"Summary: {analysis.summary or '-'}", file=output)
+    print(f"Baseline: {context.baseline_validation.status}", file=output)
+    print("Components:", file=output)
+    for component in analysis.components:
+        print(f"- {component.name} ({component.kind})", file=output)
+    print("Affected files:", file=output)
+    for path in impact.affected_files:
+        print(f"- {path}", file=output)
+    if impact.regression_risks:
+        print("Regression risks:", file=output)
+        for risk in impact.regression_risks:
+            print(f"- {risk}", file=output)

@@ -143,3 +143,91 @@ def test_openai_planner_enforces_shared_validation_command_policy(
         assert planner.plan(make_specification()).validation_commands == [
             "uv run pytest"
         ]
+
+
+def test_openai_planner_reports_task_command_validation_detail() -> None:
+    output = {
+        "tasks": [
+            {
+                "id": "TASK-001",
+                "title": "Implement",
+                "description": "Implement the feature.",
+                "requirement_ids": ["REQ-001"],
+                "validation_commands": ["pytest tests/test_example.py"],
+            }
+        ]
+    }
+    planner = OpenAIImplementationPlanner(
+        client=FakeOpenAIAPIClient([SimpleNamespace(output_text=json.dumps(output))]),
+        model="test-model",
+    )
+
+    with pytest.raises(
+        ImplementationPlanningError,
+        match=r"Unsafe validation command.*TASK-001",
+    ):
+        planner.plan(make_specification())
+
+
+def test_openai_planner_schema_requires_task_validation_commands() -> None:
+    client = FakeOpenAIAPIClient(
+        [
+            SimpleNamespace(
+                output_text=json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "TASK-001",
+                                "title": "Implement",
+                                "description": "Implement the feature.",
+                                "requirement_ids": ["REQ-001"],
+                            }
+                        ]
+                    }
+                )
+            )
+        ]
+    )
+    planner = OpenAIImplementationPlanner(client=client, model="test-model")
+
+    planner.plan(make_specification())
+
+    task_schema = client.responses.requests[0]["text"]["format"]["schema"]["$defs"][
+        "ImplementationTask"
+    ]
+    assert "validation_commands" in task_schema["properties"]
+    assert "validation_commands" in task_schema["required"]
+    assert task_schema["properties"]["requirement_ids"]["items"]["minLength"] == 1
+
+
+@pytest.mark.parametrize("requirement_id", ["", "   ", "UPG-REQ-999"])
+def test_openai_planner_reports_authoritative_and_generated_requirement_ids(
+    requirement_id: str,
+) -> None:
+    output = {
+        "tasks": [
+            {
+                "id": "TASK-001",
+                "title": "Implement",
+                "description": "Implement the upgrade.",
+                "requirement_ids": [requirement_id],
+            }
+        ]
+    }
+    specification = Specification.model_validate(
+        {
+            "requirements": [
+                {"id": "UPG-REQ-001", "description": "Known upgrade requirement."}
+            ]
+        }
+    )
+    planner = OpenAIImplementationPlanner(
+        client=FakeOpenAIAPIClient([SimpleNamespace(output_text=json.dumps(output))]),
+        model="test-model",
+    )
+
+    with pytest.raises(
+        ImplementationPlanningError,
+        match=r"authoritative_requirement_ids=.*UPG-REQ-001.*generated_task_requirement_ids",
+    ):
+        planner.plan(specification)

@@ -1,5 +1,7 @@
 """Tests for provider-neutral single-phase execution."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -8,6 +10,7 @@ from ai_agent_project.agent.acceptance import (
     AcceptanceStatus,
     RequirementValidationResult,
 )
+from ai_agent_project.agent.checkpoint import CheckpointDecision, ProgressReporter
 from ai_agent_project.agent.phase_execution import (
     PhaseExecutionResult,
     PhaseExecutionService,
@@ -23,6 +26,8 @@ from ai_agent_project.agent.project import (
 )
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
+from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
+from ai_agent_project.tools.base import ToolResult
 
 
 def make_specification() -> Specification:
@@ -157,6 +162,11 @@ class FakeAcceptanceValidator:
     ) -> AcceptanceReport:
         self.calls.append((specification, plan, agent_state))
         return self._reports.pop(0)
+
+
+class PassingShellTool:
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        return ToolResult(success=True, data={})
 
 
 def test_phase_result_is_immutable_and_uses_explicit_status() -> None:
@@ -374,3 +384,74 @@ def test_unknown_phase_and_negative_repair_limit_are_rejected() -> None:
         PhaseExecutionService(
             FakeAgentService([]), FakeAcceptanceValidator([]), max_repair_attempts=-1
         )  # type: ignore[arg-type]
+
+
+def test_task_attributed_validation_completes_phase_and_recommends_approval(
+    tmp_path: Path,
+) -> None:
+    specification = Specification.model_validate(
+        {
+            "requirements": [
+                {
+                    "id": "UPG-REQ-001",
+                    "description": "filter",
+                    "acceptance_criteria": ["Filter Todos."],
+                },
+                {
+                    "id": "UPG-REQ-002",
+                    "description": "preserve",
+                    "acceptance_criteria": ["Preserve listing."],
+                },
+            ]
+        }
+    )
+    project_specification = ProjectSpecification.from_specification(specification)
+    implementation_plan = ImplementationPlan.model_validate(
+        {
+            "tasks": [
+                {
+                    "id": "TASK-001",
+                    "title": "filter",
+                    "description": "filter",
+                    "requirement_ids": ["UPG-REQ-001"],
+                    "validation_commands": [
+                        "uv run pytest tests/test_todos.py::test_store_list_filtering"
+                    ],
+                },
+                {
+                    "id": "TASK-002",
+                    "title": "regression",
+                    "description": "regression",
+                    "requirement_ids": ["UPG-REQ-002"],
+                    "validation_commands": [
+                        "uv run pytest tests/test_todos.py::test_store_unfiltered_listing"
+                    ],
+                },
+            ]
+        }
+    )
+    plan = ProjectPlan(
+        project_title="Todo upgrade",
+        phases=(
+            ProjectPhase(
+                id="PHASE-001",
+                title="Store",
+                objective="Upgrade store.",
+                requirement_ids=("UPG-REQ-001", "UPG-REQ-002"),
+                task_ids=("TASK-001", "TASK-002"),
+            ),
+        ),
+        implementation_plan=implementation_plan,
+    )
+    result = PhaseExecutionService(
+        FakeAgentService([AgentState(status=AgentStatus.COMPLETED)]),
+        WorkspaceAcceptanceValidator(tmp_path, shell_tool=PassingShellTool()),  # type: ignore[arg-type]
+    ).execute(specification, project_specification, plan, "PHASE-001")
+
+    assert [item.status for item in result.acceptance_report.requirements] == [
+        AcceptanceStatus.PASSED,
+        AcceptanceStatus.PASSED,
+    ]
+    assert result.status is PhaseExecutionStatus.COMPLETED
+    progress = ProgressReporter().build(plan.phases[0], result)
+    assert CheckpointDecision.APPROVE in progress.recommended_decisions

@@ -1,6 +1,7 @@
 """Deterministic, workspace-scoped acceptance validation."""
 
 import ast
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,11 +12,19 @@ from ai_agent_project.agent.acceptance import (
     AcceptanceStatus,
     RequirementValidationResult,
 )
-from ai_agent_project.agent.plan import ImplementationPlan
+from ai_agent_project.agent.plan import ImplementationPlan, ImplementationTask
 from ai_agent_project.agent.specification import Requirement, Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
+from ai_agent_project.agent.workspace import is_workspace_ignored_path
 from ai_agent_project.command_policy import CommandPolicyError, parse_safe_command
 from ai_agent_project.tools.shell import ShellTool
+
+
+@dataclass(frozen=True)
+class _ValidationCommandResult:
+    command: str
+    success: bool
+    evidence: str
 
 
 class WorkspaceAcceptanceValidator:
@@ -34,17 +43,27 @@ class WorkspaceAcceptanceValidator:
         specification: Specification,
         plan: ImplementationPlan,
         agent_state: AgentState,
+        *,
+        workspace_before: dict[str, str] | None = None,
     ) -> AcceptanceReport:
         """Validate traceable file evidence and safe command execution results."""
-        commands = plan.validation_commands or ["uv run pytest"]
-        command_evidence, commands_passed = self._run_validation_commands(commands)
+        global_commands = plan.validation_commands or ["uv run pytest"]
+        task_commands = _stable_paths(
+            command for task in plan.tasks for command in task.validation_commands
+        )
+        all_commands = _stable_paths([*global_commands, *task_commands])
+        command_results = self._run_validation_commands(all_commands)
+        global_results = [command_results[command] for command in global_commands]
+        global_commands_passed = all(result.success for result in global_results)
         requirements = [
             self._validate_requirement(
                 requirement,
                 plan,
                 agent_state,
-                command_evidence,
-                commands_passed,
+                global_results,
+                command_results,
+                global_commands_passed,
+                workspace_before,
             )
             for requirement in specification.requirements
         ]
@@ -53,39 +72,66 @@ class WorkspaceAcceptanceValidator:
             notes.append(f"Agent run failed: {agent_state.error or 'unknown error'}")
         return AcceptanceReport(
             requirements=requirements,
-            validation_commands=commands,
+            validation_commands=all_commands,
             notes=notes,
         )
 
-    def _run_validation_commands(self, commands: list[str]) -> tuple[list[str], bool]:
-        evidence: list[str] = []
-        passed = True
+    def capture_workspace_state(self) -> dict[str, str]:
+        """Hash safe workspace files for one phase-local mutation boundary."""
+        state: dict[str, str] = {}
+        for candidate in self._workspace_root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            relative = candidate.relative_to(self._workspace_root).as_posix()
+            if is_workspace_ignored_path(Path(relative)):
+                continue
+            resolved = self._safe_path(relative)
+            if resolved is None:
+                continue
+            try:
+                state[relative] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+            except OSError:
+                continue
+        return state
+
+    def _run_validation_commands(
+        self, commands: list[str]
+    ) -> dict[str, "_ValidationCommandResult"]:
+        results: dict[str, _ValidationCommandResult] = {}
         for command in commands:
             try:
                 parse_safe_command(command)
             except CommandPolicyError as error:
-                evidence.append(
-                    f"Unsafe validation command rejected: {command} ({error})"
+                results[command] = _ValidationCommandResult(
+                    command=command,
+                    success=False,
+                    evidence=f"Unsafe validation command rejected: {command} ({error})",
                 )
-                passed = False
                 continue
             result = self._shell_tool.execute({"command": command})
             if result.success:
-                evidence.append(f"Validation command passed: {command}")
-            else:
-                evidence.append(
-                    f"Validation command failed: {command} ({result.error})"
+                results[command] = _ValidationCommandResult(
+                    command=command,
+                    success=True,
+                    evidence=f"Validation command passed: {command}",
                 )
-                passed = False
-        return evidence, passed
+            else:
+                results[command] = _ValidationCommandResult(
+                    command=command,
+                    success=False,
+                    evidence=f"Validation command failed: {command} ({result.error})",
+                )
+        return results
 
     def _validate_requirement(
         self,
         requirement: Requirement,
         plan: ImplementationPlan,
         agent_state: AgentState,
-        command_evidence: list[str],
-        commands_passed: bool,
+        global_results: list["_ValidationCommandResult"],
+        command_results: dict[str, "_ValidationCommandResult"],
+        global_commands_passed: bool,
+        workspace_before: dict[str, str] | None,
     ) -> RequirementValidationResult:
         tasks = [task for task in plan.tasks if requirement.id in task.requirement_ids]
         paths = _stable_paths(
@@ -100,7 +146,31 @@ class WorkspaceAcceptanceValidator:
         implemented_files, test_files, file_evidence, files_exist = self._inspect_paths(
             paths
         )
-        evidence = [*file_evidence, *command_evidence]
+        attributable_results = _task_command_results(tasks, command_results)
+        workspace_evidence, workspace_passed, workspace_failed = (
+            self._task_workspace_evidence(tasks, workspace_before)
+        )
+        attributable_passed = (
+            any(result.success for result in attributable_results) or workspace_passed
+        )
+        attributable_failed = (
+            any(not result.success for result in attributable_results)
+            or workspace_failed
+        )
+        evidence = [
+            *file_evidence,
+            *workspace_evidence,
+            *(result.evidence for result in global_results),
+            *(
+                f"Requirement-attributed task validation ({task.id}): {result.evidence}"
+                for task in tasks
+                for result in (
+                    command_results[command]
+                    for command in task.validation_commands
+                    if command in command_results
+                )
+            ),
+        ]
         if agent_state.status is AgentStatus.FAILED:
             evidence.append(f"Agent run failed: {agent_state.error or 'unknown error'}")
 
@@ -108,16 +178,19 @@ class WorkspaceAcceptanceValidator:
             self._validate_criterion(
                 criterion,
                 test_files,
-                commands_passed,
+                global_commands_passed,
                 evidence,
                 self._find_functional_assertions(criterion, test_files, evidence),
+                attributable_passed=attributable_passed,
+                attributable_failed=attributable_failed,
             )
             for criterion in requirement.acceptance_criteria
         ]
         statuses = [criterion.status for criterion in criteria]
         if (
             agent_state.status is AgentStatus.FAILED
-            or not commands_passed
+            or not global_commands_passed
+            or attributable_failed
             or not files_exist
             or any(status is AcceptanceStatus.FAILED for status in statuses)
         ):
@@ -136,6 +209,64 @@ class WorkspaceAcceptanceValidator:
             test_files=test_files,
             evidence=evidence,
         )
+
+    def _task_workspace_evidence(
+        self, tasks: list[ImplementationTask], workspace_before: dict[str, str] | None
+    ) -> tuple[list[str], bool, bool]:
+        evidence: list[str] = []
+        passed = False
+        failed = False
+        current = (
+            self.capture_workspace_state() if workspace_before is not None else None
+        )
+        for task in tasks:
+            for validation in task.required_file_contents:
+                resolved = self._safe_path(validation.path)
+                if resolved is None or not resolved.exists():
+                    evidence.append(
+                        f"Required content file missing or unsafe: {validation.path}"
+                    )
+                    failed = True
+                    continue
+                try:
+                    text = resolved.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    evidence.append(
+                        f"Could not read required content file: {validation.path}"
+                    )
+                    failed = True
+                    continue
+                missing = [
+                    fragment
+                    for fragment in validation.required_fragments
+                    if fragment not in text
+                ]
+                if missing:
+                    evidence.append(
+                        f"Required content missing from {validation.path}: {missing!r}"
+                    )
+                    failed = True
+                else:
+                    evidence.append(f"Required content present in {validation.path}")
+                    passed = True
+            if task.allowed_changed_files:
+                if current is None or workspace_before is None:
+                    evidence.append("Phase-local workspace baseline is unavailable")
+                    failed = True
+                    continue
+                changed = _changed_files(workspace_before, current)
+                disallowed = [
+                    path for path in changed if path not in task.allowed_changed_files
+                ]
+                if disallowed:
+                    evidence.append(
+                        f"Disallowed phase-local changed files: {disallowed!r}"
+                    )
+                    failed = True
+                else:
+                    evidence.append(f"Phase-local changed files allowed: {changed!r}")
+                    passed = True
+        return evidence, passed, failed
 
     def _inspect_paths(
         self, paths: list[str]
@@ -173,13 +304,16 @@ class WorkspaceAcceptanceValidator:
     def _validate_criterion(
         criterion: str,
         test_files: list[str],
-        commands_passed: bool,
+        global_commands_passed: bool,
         evidence: list[str],
         functional_evidence: list["_FunctionalAssertion"] | None = None,
+        *,
+        attributable_passed: bool = False,
+        attributable_failed: bool = False,
     ) -> AcceptanceCriterionResult:
         classification = _classify_test_requirement(criterion)
         if classification == "creation":
-            passed = bool(test_files) and commands_passed
+            passed = bool(test_files) and global_commands_passed
             return AcceptanceCriterionResult(
                 criterion=criterion,
                 status=AcceptanceStatus.PASSED if passed else AcceptanceStatus.FAILED,
@@ -190,7 +324,7 @@ class WorkspaceAcceptanceValidator:
                 criterion=criterion,
                 status=(
                     AcceptanceStatus.PASSED
-                    if commands_passed
+                    if global_commands_passed
                     else AcceptanceStatus.FAILED
                 ),
                 evidence=list(evidence),
@@ -215,9 +349,9 @@ class WorkspaceAcceptanceValidator:
                 if parsed is not None
                 and _literal_same_type(item.expected, parsed.expected)
             ]
-            if contradictions or not commands_passed:
+            if contradictions or not global_commands_passed or attributable_failed:
                 status = AcceptanceStatus.FAILED
-            elif matches:
+            elif matches or attributable_passed:
                 status = AcceptanceStatus.PASSED
             else:
                 status = AcceptanceStatus.UNKNOWN
@@ -242,11 +376,21 @@ class WorkspaceAcceptanceValidator:
                     else "No matching direct test assertion was found."
                 ),
             )
+        if attributable_failed:
+            status = AcceptanceStatus.FAILED
+        elif attributable_passed:
+            status = AcceptanceStatus.PASSED
+        else:
+            status = AcceptanceStatus.UNKNOWN
         return AcceptanceCriterionResult(
             criterion=criterion,
-            status=AcceptanceStatus.UNKNOWN,
+            status=status,
             evidence=list(evidence),
-            notes="Criterion is not mechanically verifiable in validator v1.",
+            notes=(
+                None
+                if attributable_passed or attributable_failed
+                else "Criterion is not mechanically verifiable in validator v1."
+            ),
         )
 
     def _find_functional_assertions(
@@ -300,13 +444,15 @@ def _classify_test_requirement(criterion: str) -> str | None:
 
     if any(
         phrase in normalized
-        for phrase in ("add pytest tests", "add tests", "pytest tests", "test coverage")
+        for phrase in ("add pytest tests", "add tests", "test coverage")
     ):
         return "creation"
     if any(
         phrase in normalized
         for phrase in ("tests must pass", "all tests must pass", "pytest must pass")
     ):
+        return "suite_pass"
+    if "pytest" in normalized and "test" in normalized and "pass" in normalized:
         return "suite_pass"
     return None
 
@@ -420,3 +566,25 @@ def _stable_paths(paths: object) -> list[str]:
         if isinstance(path, str) and path not in result:
             result.append(path)
     return result
+
+
+def _task_command_results(
+    tasks: list[ImplementationTask],
+    command_results: dict[str, _ValidationCommandResult],
+) -> list[_ValidationCommandResult]:
+    """Return only command evidence explicitly assigned to requirement tasks."""
+    results: list[_ValidationCommandResult] = []
+    for task in tasks:
+        for command in task.validation_commands:
+            result = command_results.get(command)
+            if result is not None and result not in results:
+                results.append(result)
+    return results
+
+
+def _changed_files(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    return sorted(
+        path
+        for path in before.keys() | after.keys()
+        if before.get(path) != after.get(path)
+    )

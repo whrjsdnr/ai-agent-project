@@ -5,6 +5,7 @@ from uuid import UUID
 import pytest
 
 from ai_agent_project.agent.checkpoint import CheckpointDecision
+from ai_agent_project.agent.codebase_analysis import CodebaseAnalysis
 from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.project import (
     ProjectPhase,
@@ -25,6 +26,15 @@ from ai_agent_project.agent.project_execution import (
 )
 from ai_agent_project.agent.project_runner import ProjectRun
 from ai_agent_project.agent.specification import Specification
+from ai_agent_project.agent.upgrade import (
+    BaselineStatus,
+    BaselineValidation,
+    ProjectMode,
+    UpgradeContext,
+    UpgradeImpact,
+    UpgradeRequest,
+    UpgradeSpecification,
+)
 from ai_agent_project.agent.workspace import WorkspaceSnapshot
 
 
@@ -164,6 +174,18 @@ class FakePlanReviser:
         return self.plan_result
 
 
+class FakeUpgradeRunner:
+    def __init__(self, project_run: ProjectRun) -> None:
+        self.project_run = project_run
+        self.calls: list[tuple[str, str | None]] = []
+
+    def start_upgrade(
+        self, request_text: str, *, project_title: str | None = None
+    ) -> ProjectRun:
+        self.calls.append((request_text, project_title))
+        return self.project_run
+
+
 def make_service(
     project_run: ProjectRun,
     *,
@@ -227,6 +249,49 @@ def test_create_project_bootstraps_once_stores_uuid_and_does_not_execute() -> No
     assert execution_service.execute_calls == []
     assert store.calls == ["create"]
     assert store.get(stored.id) is project_run
+
+
+def test_create_upgrade_project_persists_upgrade_snapshot_without_execution() -> None:
+    base = make_project_run(ProjectExecutionStatus.AWAITING_PLAN_APPROVAL)
+    upgrade_run = ProjectRun(
+        specification=base.specification,
+        project_specification=base.project_specification,
+        workspace=base.workspace,
+        implementation_plan=base.implementation_plan,
+        project_plan=base.project_plan,
+        execution_state=base.execution_state,
+        plan_revision_state=base.plan_revision_state,
+        mode=ProjectMode.UPGRADE,
+        upgrade_context=UpgradeContext(
+            request=UpgradeRequest(request_text="Upgrade safely."),
+            codebase_analysis=CodebaseAnalysis(summary="Existing project."),
+            upgrade_specification=UpgradeSpecification(
+                title="Upgrade",
+                objective="Upgrade safely.",
+                current_system_summary="Existing project.",
+                requirements=tuple(base.specification.requirements),
+                impact=UpgradeImpact(),
+            ),
+            baseline_validation=BaselineValidation(status=BaselineStatus.UNAVAILABLE),
+        ),
+    )
+    runner = FakeProjectRunner(base)
+    execution = FakeProjectExecutionService(base.execution_state, base.execution_state)
+    store = RecordingStore()
+    upgrade_runner = FakeUpgradeRunner(upgrade_run)
+    service = ProjectApplicationService(
+        runner,  # type: ignore[arg-type]
+        execution,  # type: ignore[arg-type]
+        store,
+        upgrade_runner=upgrade_runner,  # type: ignore[arg-type]
+    )
+
+    stored = service.create_upgrade_project("Upgrade safely.", project_title="Upgrade")
+
+    assert stored.project_run.mode is ProjectMode.UPGRADE
+    assert upgrade_runner.calls == [("Upgrade safely.", "Upgrade")]
+    assert execution.execute_calls == []
+    assert store.get(stored.id) is upgrade_run
 
 
 def test_get_project_returns_snapshot_and_missing_id_has_domain_error() -> None:

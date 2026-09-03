@@ -16,7 +16,11 @@ from ai_agent_project.agent.project_execution import (
     ProjectExecutionState,
     ProjectExecutionStatus,
 )
-from ai_agent_project.agent.project_runner import ProjectRun, ProjectRunner
+from ai_agent_project.agent.project_runner import (
+    ProjectRun,
+    ProjectRunner,
+    UpgradeProjectRunner,
+)
 
 
 class ProjectRunError(Exception):
@@ -91,11 +95,13 @@ class ProjectApplicationService:
         project_execution_service: ProjectExecutionService,
         store: ProjectRunStore,
         plan_reviser: ProjectPlanReviser | None = None,
+        upgrade_runner: UpgradeProjectRunner | None = None,
     ) -> None:
         self._project_runner = project_runner
         self._project_execution_service = project_execution_service
         self._store = store
         self._plan_reviser = plan_reviser
+        self._upgrade_runner = upgrade_runner
 
     def create_project(
         self,
@@ -113,6 +119,28 @@ class ProjectApplicationService:
         project_run_id = str(uuid4())
         self._store.create(project_run_id, project_run)
         return StoredProjectRun(id=project_run_id, project_run=project_run)
+
+    def create_upgrade_project(
+        self, request_text: str, *, project_title: str | None = None
+    ) -> StoredProjectRun:
+        """Bootstrap and persist an upgrade project without source modifications."""
+        if not request_text.strip():
+            raise ProjectRunError("Upgrade request must not be blank")
+        if self._upgrade_runner is None:
+            raise ProjectRunError("Upgrade project creation is not configured")
+        project_run = self._upgrade_runner.start_upgrade(
+            request_text, project_title=project_title
+        )
+        project_run_id = str(uuid4())
+        self._store.create(project_run_id, project_run)
+        return StoredProjectRun(id=project_run_id, project_run=project_run)
+
+    def get_analysis(self, project_run_id: str):
+        """Return upgrade context only for explicit upgrade projects."""
+        project_run = self._require_project_run(project_run_id)
+        if project_run.upgrade_context is None:
+            raise ProjectRunError("Project run has no upgrade analysis")
+        return project_run.upgrade_context
 
     def get_project(self, project_run_id: str) -> StoredProjectRun:
         """Return the latest stored immutable project run snapshot."""
