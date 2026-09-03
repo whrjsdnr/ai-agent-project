@@ -24,6 +24,8 @@ class ResearchStatus(StrEnum):
     DIRECTION_SELECTED = "direction_selected"
     FAILED = "failed"
     COMPLETED_DISCOVERY = "completed_discovery"
+    AWAITING_RESEARCH_PLAN_APPROVAL = "awaiting_research_plan_approval"
+    RESEARCH_PLAN_APPROVED = "research_plan_approved"
 
 
 class ResearchScope(StrEnum):
@@ -193,6 +195,149 @@ class ResearchSynthesis(BaseModel):
     directions: tuple[ResearchDirection, ...] = ()
 
 
+class ResearchObjective(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    id: str = Field(min_length=1)
+    description: str
+    direction_id: str
+
+    _validate_id = field_validator("id")(_nonblank_identifier)
+
+
+class ResearchHypothesis(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    id: str = Field(min_length=1)
+    statement: str
+    objective_ids: tuple[str, ...] = ()
+
+    _validate_id = field_validator("id")(_nonblank_identifier)
+
+
+class ResearchMethodologyStep(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    id: str = Field(min_length=1)
+    description: str
+    objective_ids: tuple[str, ...] = ()
+    hypothesis_ids: tuple[str, ...] = ()
+
+    _validate_id = field_validator("id")(_nonblank_identifier)
+
+
+class ResearchMetric(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    id: str = Field(min_length=1)
+    name: str
+    description: str
+    measurement_method: str
+    direction: str | None = None
+
+    _validate_id = field_validator("id")(_nonblank_identifier)
+
+
+class ResearchSuccessCriterion(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    id: str = Field(min_length=1)
+    metric_id: str | None = None
+    target_description: str
+    rationale: str
+
+    _validate_id = field_validator("id")(_nonblank_identifier)
+
+
+class ResearchPlan(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    id: str = Field(min_length=1)
+    selected_direction_id: str
+    title: str
+    research_question: str
+    objectives: tuple[ResearchObjective, ...] = ()
+    hypotheses: tuple[ResearchHypothesis, ...] = ()
+    methodology: tuple[ResearchMethodologyStep, ...] = ()
+    metrics: tuple[ResearchMetric, ...] = ()
+    success_criteria: tuple[ResearchSuccessCriterion, ...] = ()
+    risks: tuple[str, ...] = ()
+    assumptions: tuple[str, ...] = ()
+    expected_outputs: tuple[str, ...] = ()
+
+    _validate_id = field_validator("id")(_nonblank_identifier)
+
+    @model_validator(mode="after")
+    def validate_traceability(self) -> "ResearchPlan":
+        groups = (
+            ("objective", self.objectives),
+            ("hypothesis", self.hypotheses),
+            ("methodology step", self.methodology),
+            ("metric", self.metrics),
+            ("success criterion", self.success_criteria),
+        )
+        for name, items in groups:
+            if len({item.id for item in items}) != len(items):
+                raise ValueError(f"Duplicate research {name} IDs are not allowed")
+        objective_ids = {item.id for item in self.objectives}
+        hypothesis_ids = {item.id for item in self.hypotheses}
+        metric_ids = {item.id for item in self.metrics}
+        if any(
+            item.direction_id != self.selected_direction_id for item in self.objectives
+        ):
+            raise ValueError(
+                "Research objectives must reference the selected direction"
+            )
+        if any(
+            not set(item.objective_ids) <= objective_ids for item in self.hypotheses
+        ):
+            raise ValueError("Research hypothesis references unknown objective")
+        if any(
+            not set(item.objective_ids) <= objective_ids
+            or not set(item.hypothesis_ids) <= hypothesis_ids
+            for item in self.methodology
+        ):
+            raise ValueError(
+                "Research methodology references unknown objective or hypothesis"
+            )
+        if any(
+            item.metric_id is not None and item.metric_id not in metric_ids
+            for item in self.success_criteria
+        ):
+            raise ValueError("Research success criterion references unknown metric")
+        return self
+
+
+class ResearchPlanRevision(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    version: int = Field(ge=1)
+    plan: ResearchPlan
+    note: str | None = None
+
+
+class ResearchPlanRevisionState(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    active_version: int = Field(ge=1)
+    approved: bool = False
+    revisions: tuple[ResearchPlanRevision, ...]
+
+    @model_validator(mode="after")
+    def validate_revision_state(self) -> "ResearchPlanRevisionState":
+        if not self.revisions:
+            raise ValueError("Research plan revision history must not be empty")
+        expected_versions = tuple(range(1, len(self.revisions) + 1))
+        actual_versions = tuple(revision.version for revision in self.revisions)
+        if actual_versions != expected_versions:
+            raise ValueError("Research plan revision versions must be ordered from 1")
+        if self.active_version != self.revisions[-1].version:
+            raise ValueError("Research plan active version must be the latest revision")
+        return self
+
+    @classmethod
+    def from_plan(cls, plan: ResearchPlan) -> "ResearchPlanRevisionState":
+        return cls(
+            active_version=1, revisions=(ResearchPlanRevision(version=1, plan=plan),)
+        )
+
+    @property
+    def active_plan(self) -> ResearchPlan:
+        return self.revisions[-1].plan
+
+
 class ResearchQuestionSet(BaseModel):
     """Fixed-schema structured-output envelope for question planning."""
 
@@ -320,6 +465,7 @@ class ResearchRun(BaseModel):
     status: ResearchStatus
     report: ResearchDiscoveryReport
     selected_direction_id: str | None = None
+    plan_revision_state: ResearchPlanRevisionState | None = None
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResearchRun":
@@ -330,8 +476,33 @@ class ResearchRun(BaseModel):
         ):
             raise ValueError("Selected research direction does not exist")
         if (
-            self.status is ResearchStatus.DIRECTION_SELECTED
+            self.status
+            in {
+                ResearchStatus.DIRECTION_SELECTED,
+                ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL,
+                ResearchStatus.RESEARCH_PLAN_APPROVED,
+            }
             and self.selected_direction_id is None
         ):
             raise ValueError("Direction-selected run requires selected_direction_id")
+        if self.plan_revision_state is not None and (
+            self.plan_revision_state.active_plan.selected_direction_id
+            != self.selected_direction_id
+        ):
+            raise ValueError("Research plan must preserve the selected direction")
+        if self.plan_revision_state is not None and self.status not in {
+            ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL,
+            ResearchStatus.RESEARCH_PLAN_APPROVED,
+        }:
+            raise ValueError("Research plan state requires a planning lifecycle status")
+        if self.status is ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL and (
+            self.plan_revision_state is None or self.plan_revision_state.approved
+        ):
+            raise ValueError(
+                "Awaiting plan approval requires an unapproved research plan"
+            )
+        if self.status is ResearchStatus.RESEARCH_PLAN_APPROVED and (
+            self.plan_revision_state is None or not self.plan_revision_state.approved
+        ):
+            raise ValueError("Approved research-plan status requires an approved plan")
         return self

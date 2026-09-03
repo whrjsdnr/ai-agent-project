@@ -7,11 +7,14 @@ from pydantic import BaseModel, ConfigDict
 
 from ai_agent_project.agent.research import (
     ResearchDiscoveryReport,
+    ResearchPlanRevision,
+    ResearchPlanRevisionState,
     ResearchRequest,
     ResearchRun,
     ResearchStatus,
 )
 from ai_agent_project.agent.research_discovery import ResearchDiscoveryService
+from ai_agent_project.agent.research_planning import ResearchPlanGenerator
 
 
 class ResearchRunError(Exception):
@@ -82,9 +85,11 @@ class ResearchApplicationService:
         self,
         discovery_service: ResearchDiscoveryService,
         store: ResearchRunStore,
+        plan_generator: ResearchPlanGenerator | None = None,
     ) -> None:
         self._discovery_service = discovery_service
         self._store = store
+        self._plan_generator = plan_generator
 
     def create_research_run(
         self, topic: str, *, user_context: str | None = None
@@ -130,6 +135,99 @@ class ResearchApplicationService:
         )
         self._store.replace(research_run_id, updated)
         return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def generate_plan(self, research_run_id: str) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if run.status is not ResearchStatus.DIRECTION_SELECTED:
+            raise InvalidResearchStateError(
+                "Research plan generation requires a selected direction"
+            )
+        if self._plan_generator is None:
+            raise ResearchRunError("Research plan generation is not configured")
+        direction = self._selected_direction(run)
+        plan = self._plan_generator.generate(run.request, direction, run.report)
+        if plan.selected_direction_id != direction.id:
+            raise ResearchRunError(
+                "Generated research plan changed the selected direction"
+            )
+        updated = run.model_copy(
+            update={
+                "status": ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL,
+                "plan_revision_state": ResearchPlanRevisionState.from_plan(plan),
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def get_plan(self, research_run_id: str) -> ResearchPlanRevisionState:
+        state = self._require_run(research_run_id).plan_revision_state
+        if state is None:
+            raise InvalidResearchStateError("Research plan has not been generated")
+        return state
+
+    def revise_plan(self, research_run_id: str, note: str) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if run.status is not ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL:
+            raise InvalidResearchStateError(
+                "Research plan revision is not allowed in this state"
+            )
+        if not note.strip():
+            raise ResearchRunError("Research plan revision note must not be blank")
+        if self._plan_generator is None or run.plan_revision_state is None:
+            raise ResearchRunError("Research plan revision is not configured")
+        direction = self._selected_direction(run)
+        plan = self._plan_generator.generate(
+            run.request, direction, run.report, revision_note=note
+        )
+        if plan.selected_direction_id != direction.id:
+            raise ResearchRunError(
+                "Generated research plan changed the selected direction"
+            )
+        revisions = (
+            *run.plan_revision_state.revisions,
+            ResearchPlanRevision(
+                version=len(run.plan_revision_state.revisions) + 1, plan=plan, note=note
+            ),
+        )
+        updated = run.model_copy(
+            update={
+                "plan_revision_state": ResearchPlanRevisionState(
+                    active_version=len(revisions), revisions=revisions
+                )
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def approve_plan(self, research_run_id: str) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if (
+            run.status is not ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL
+            or run.plan_revision_state is None
+        ):
+            raise InvalidResearchStateError(
+                "Research plan approval is not allowed in this state"
+            )
+        updated = run.model_copy(
+            update={
+                "status": ResearchStatus.RESEARCH_PLAN_APPROVED,
+                "plan_revision_state": run.plan_revision_state.model_copy(
+                    update={"approved": True}
+                ),
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    @staticmethod
+    def _selected_direction(run: ResearchRun):
+        if run.selected_direction_id is None:
+            raise InvalidResearchStateError("Research run has no selected direction")
+        return next(
+            direction
+            for direction in run.report.directions
+            if direction.id == run.selected_direction_id
+        )
 
     def _require_run(self, research_run_id: str) -> ResearchRun:
         run = self._store.get(research_run_id)

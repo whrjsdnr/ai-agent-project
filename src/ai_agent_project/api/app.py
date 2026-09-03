@@ -37,6 +37,7 @@ from ai_agent_project.agent.research_application import (
     InvalidResearchStateError,
     ResearchApplicationService,
     ResearchDirectionNotFoundError,
+    ResearchRunError,
     ResearchRunNotFoundError,
     StoredResearchRun,
 )
@@ -62,6 +63,9 @@ from ai_agent_project.llm.providers.openai_research_discovery_synthesizer import
 )
 from ai_agent_project.llm.providers.openai_research_evidence_extractor import (
     OpenAIResearchEvidenceExtractor,
+)
+from ai_agent_project.llm.providers.openai_research_plan_generator import (
+    OpenAIResearchPlanGenerator,
 )
 from ai_agent_project.llm.providers.openai_research_question_planner import (
     OpenAIResearchQuestionPlanner,
@@ -198,6 +202,17 @@ class SelectResearchDirectionRequest(BaseModel):
     direction_id: str = Field(min_length=1)
 
 
+class ResearchPlanRevisionRequest(BaseModel):
+    note: str
+
+    @field_validator("note")
+    @classmethod
+    def reject_blank_note(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("note must not be blank")
+        return value
+
+
 def _default_workspace_root() -> Path:
     """Return the project root containing the source tree."""
     return Path(__file__).resolve().parents[3]
@@ -288,7 +303,9 @@ def create_default_research_application_service(
         FilesystemWorkspaceInspector(resolved_workspace_root),
     )
     return ResearchApplicationService(
-        discovery, store if store is not None else InMemoryResearchRunStore()
+        discovery,
+        store if store is not None else InMemoryResearchRunStore(),
+        OpenAIResearchPlanGenerator(),
     )
 
 
@@ -394,6 +411,68 @@ def create_app(
         except (ResearchRunNotFoundError, ResearchDirectionNotFoundError) as error:
             raise HTTPException(
                 status_code=404, detail="Research run or direction not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research lifecycle conflict."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/plan")
+    def generate_research_plan(research_run_id: str) -> StoredResearchRun:
+        try:
+            return require_research_service().generate_plan(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research lifecycle conflict."
+            ) from error
+        except (ResearchRunError, ValueError) as error:
+            raise HTTPException(
+                status_code=503, detail="Research plan generation unavailable."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/plan")
+    def get_research_plan(research_run_id: str):
+        try:
+            return require_research_service().get_plan(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research plan unavailable."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/plan/revisions")
+    def revise_research_plan(
+        research_run_id: str, request: ResearchPlanRevisionRequest
+    ) -> StoredResearchRun:
+        try:
+            return require_research_service().revise_plan(research_run_id, request.note)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research lifecycle conflict."
+            ) from error
+        except (ResearchRunError, ValueError) as error:
+            raise HTTPException(
+                status_code=503, detail="Research plan revision unavailable."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/plan/approval")
+    def approve_research_plan(research_run_id: str) -> StoredResearchRun:
+        try:
+            return require_research_service().approve_plan(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
             ) from error
         except InvalidResearchStateError as error:
             raise HTTPException(

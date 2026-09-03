@@ -1,3 +1,6 @@
+import json
+from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,11 +14,15 @@ from ai_agent_project.agent.research import (
     ResearchEvolutionStage,
     ResearchGap,
     ResearchLandscape,
+    ResearchMetric,
+    ResearchObjective,
+    ResearchPlan,
     ResearchQuestion,
     ResearchRequest,
     ResearchScope,
     ResearchSource,
     ResearchStatus,
+    ResearchSuccessCriterion,
     ResearchSynthesis,
     SourceAuthority,
 )
@@ -411,3 +418,190 @@ def test_file_store_round_trips_selected_direction(tmp_path) -> None:
     assert reloaded.research_run.selected_direction_id == "RD-002"
     with pytest.raises(ResearchRunStorageError, match="canonical UUID"):
         FileResearchRunStore(store_root).get("../not-a-run")
+
+
+def test_research_plan_lifecycle_preserves_selected_direction(tmp_path) -> None:
+    class FakePlanGenerator:
+        def generate(self, request, direction, report, *, revision_note=None):
+            del request, report
+            suffix = "2" if revision_note else "1"
+            return ResearchPlan(
+                id=f"PLAN-{suffix}",
+                selected_direction_id=direction.id,
+                title="Planning-only plan",
+                research_question=direction.research_question,
+                objectives=(
+                    ResearchObjective(
+                        id=f"OBJ-{suffix}",
+                        description="Objective",
+                        direction_id=direction.id,
+                    ),
+                ),
+                metrics=(
+                    ResearchMetric(
+                        id=f"MET-{suffix}",
+                        name="Quality",
+                        description="Qualitative",
+                        measurement_method="Review",
+                    ),
+                ),
+                success_criteria=(
+                    ResearchSuccessCriterion(
+                        id=f"SC-{suffix}",
+                        metric_id=f"MET-{suffix}",
+                        target_description="Qualitatively useful",
+                        rationale="Exploratory",
+                    ),
+                ),
+            )
+
+    workspace = tmp_path / "workspace"
+    (workspace / "nested").mkdir(parents=True)
+    (workspace / "README.md").write_text("planning only\n", encoding="utf-8")
+    (workspace / "nested" / "data.txt").write_bytes(b"unchanged\n")
+    before = {
+        path.relative_to(workspace): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    }
+    application = ResearchApplicationService(
+        _discovery_service(), InMemoryResearchRunStore(), FakePlanGenerator()
+    )
+    created = application.create_research_run("FastAPI lifespan management")
+    selected = application.select_research_direction(created.id, "RD-002")
+    generated = application.generate_plan(created.id)
+    revised = application.revise_plan(created.id, "Clarify methodology")
+    approved = application.approve_plan(created.id)
+
+    assert selected.research_run.selected_direction_id == "RD-002"
+    assert (
+        generated.research_run.status is ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL
+    )
+    assert generated.research_run.plan_revision_state is not None
+    assert generated.research_run.plan_revision_state.active_version == 1
+    assert revised.research_run.plan_revision_state is not None
+    assert revised.research_run.plan_revision_state.active_version == 2
+    assert revised.research_run.plan_revision_state.revisions[0].plan.id == "PLAN-1"
+    assert approved.research_run.status is ResearchStatus.RESEARCH_PLAN_APPROVED
+    assert approved.research_run.selected_direction_id == "RD-002"
+    after = {
+        path.relative_to(workspace): path.read_bytes()
+        for path in workspace.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    with pytest.raises(InvalidResearchStateError):
+        application.revise_plan(created.id, "Too late")
+
+
+def test_file_store_persists_planning_state_and_loads_feature_3a_snapshots(
+    tmp_path,
+) -> None:
+    class FakePlanGenerator:
+        def generate(self, request, direction, report, *, revision_note=None):
+            del request, report
+            version = "2" if revision_note else "1"
+            return ResearchPlan(
+                id=f"PLAN-{version}",
+                selected_direction_id=direction.id,
+                title="Plan",
+                research_question=direction.research_question,
+                objectives=(
+                    ResearchObjective(
+                        id=f"OBJ-{version}",
+                        description="Objective",
+                        direction_id=direction.id,
+                    ),
+                ),
+            )
+
+    store_root = tmp_path / "research-runs"
+    application = ResearchApplicationService(
+        _discovery_service(), FileResearchRunStore(store_root), FakePlanGenerator()
+    )
+    created = application.create_research_run("FastAPI lifespan management")
+    application.select_research_direction(created.id, "RD-002")
+    application.generate_plan(created.id)
+    application.revise_plan(created.id, "Clarify scope")
+    approved = application.approve_plan(created.id)
+
+    reloaded = ResearchApplicationService(
+        _discovery_service(), FileResearchRunStore(store_root), FakePlanGenerator()
+    ).get_research_run(created.id)
+    assert reloaded.research_run == approved.research_run
+    assert reloaded.research_run.status is ResearchStatus.RESEARCH_PLAN_APPROVED
+    assert reloaded.research_run.selected_direction_id == "RD-002"
+    assert reloaded.research_run.plan_revision_state is not None
+    assert [
+        item.note for item in reloaded.research_run.plan_revision_state.revisions
+    ] == [
+        None,
+        "Clarify scope",
+    ]
+    assert reloaded.research_run.plan_revision_state.active_version == 2
+    assert reloaded.research_run.plan_revision_state.approved is True
+
+    legacy_id = str(uuid4())
+    legacy_payload = reloaded.research_run.model_dump(mode="json")
+    legacy_payload["status"] = ResearchStatus.DIRECTION_SELECTED.value
+    legacy_payload.pop("plan_revision_state")
+    (store_root / f"{legacy_id}.json").write_text(
+        json.dumps({"research_run_id": legacy_id, "research_run": legacy_payload}),
+        encoding="utf-8",
+    )
+    legacy = FileResearchRunStore(store_root).get(legacy_id)
+    assert legacy is not None
+    assert legacy.status is ResearchStatus.DIRECTION_SELECTED
+    assert legacy.plan_revision_state is None
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update({"status": "research_plan_approved"}),
+        lambda payload: payload["plan_revision_state"].update({"active_version": 9}),
+        lambda payload: payload["plan_revision_state"]["revisions"][0]["plan"].update(
+            {"selected_direction_id": "RD-001"}
+        ),
+    ],
+)
+def test_file_store_rejects_invalid_persisted_planning_state(tmp_path, mutate) -> None:
+    store_root = tmp_path / "research-runs"
+    application = ResearchApplicationService(
+        _discovery_service(), FileResearchRunStore(store_root)
+    )
+    created = application.create_research_run("FastAPI lifespan management")
+    selected = application.select_research_direction(created.id, "RD-002")
+    payload = selected.research_run.model_dump(mode="json")
+    payload["plan_revision_state"] = {
+        "active_version": 1,
+        "approved": False,
+        "revisions": [
+            {
+                "version": 1,
+                "plan": {
+                    "id": "PLAN-1",
+                    "selected_direction_id": "RD-002",
+                    "title": "Plan",
+                    "research_question": "Question",
+                    "objectives": [],
+                    "hypotheses": [],
+                    "methodology": [],
+                    "metrics": [],
+                    "success_criteria": [],
+                    "risks": [],
+                    "assumptions": [],
+                    "expected_outputs": [],
+                },
+                "note": None,
+            }
+        ],
+    }
+    mutate(payload)
+    (store_root / f"{created.id}.json").write_text(
+        json.dumps({"research_run_id": created.id, "research_run": payload}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResearchRunStorageError, match="snapshot is invalid"):
+        FileResearchRunStore(store_root).get(created.id)

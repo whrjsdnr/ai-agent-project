@@ -197,6 +197,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     research_select.add_argument("research_run_id")
     research_select.add_argument("direction_id")
+    for name, help_text in (
+        ("plan", "Generate the initial research plan"),
+        ("show-plan", "Show the latest research plan"),
+        ("approve-plan", "Approve the latest research plan"),
+    ):
+        command = research_commands.add_parser(name, help=help_text)
+        command.add_argument("research_run_id")
+    revise = research_commands.add_parser(
+        "revise-plan", help="Revise the research plan"
+    )
+    revise.add_argument("research_run_id")
+    revise.add_argument("--note", required=True)
     return parser
 
 
@@ -588,6 +600,20 @@ def _run_research_command(
             service.get_research_directions(arguments.research_run_id), output
         )
         return 0
+    if arguments.command == "plan":
+        _print_research_plan(service.generate_plan(arguments.research_run_id), output)
+        return 0
+    if arguments.command == "show-plan":
+        _print_research_plan_state(service.get_plan(arguments.research_run_id), output)
+        return 0
+    if arguments.command == "revise-plan":
+        _print_research_plan(
+            service.revise_plan(arguments.research_run_id, arguments.note), output
+        )
+        return 0
+    if arguments.command == "approve-plan":
+        _print_research_plan(service.approve_plan(arguments.research_run_id), output)
+        return 0
     stored = service.select_research_direction(
         arguments.research_run_id, arguments.direction_id
     )
@@ -687,3 +713,27 @@ def _print_research_directions(directions: object, output: TextIO) -> None:
         )
         print(f"Feasibility: {direction.feasibility}", file=output)
         print(f"Risks: {', '.join(direction.risks) or '-'}", file=output)
+
+
+def _print_research_plan(stored: StoredResearchRun, output: TextIO) -> None:
+    state = stored.research_run.plan_revision_state
+    if state is None:
+        raise CliError("Research plan is missing")
+    print(f"Status: {stored.research_run.status}", file=output)
+    _print_research_plan_state(state, output)
+
+
+def _print_research_plan_state(state: object, output: TextIO) -> None:
+    from ai_agent_project.agent.research import ResearchPlanRevisionState
+
+    if not isinstance(state, ResearchPlanRevisionState):
+        raise CliError("Stored research plan is invalid")
+    plan = state.active_plan
+    print(f"Plan version: {state.active_version}", file=output)
+    print(f"Approved: {state.approved}", file=output)
+    print(f"Title: {plan.title}", file=output)
+    print(f"Selected direction: {plan.selected_direction_id}", file=output)
+    print(f"Objectives: {len(plan.objectives)}", file=output)
+    print(f"Methodology steps: {len(plan.methodology)}", file=output)
+    print(f"Metrics: {len(plan.metrics)}", file=output)
+    print(f"Success criteria: {len(plan.success_criteria)}", file=output)
