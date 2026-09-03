@@ -56,7 +56,9 @@ def test_openai_parser_requests_structured_specification_and_validates_result() 
     assert specification.requirements[0].id == "REQ-001"
     assert specification.requirements[0].acceptance_criteria == ["중복 이메일이면 409"]
     assert specification.constraints == ["Python 3.12를 사용해야 한다."]
-    assert specification.assumptions == ["이메일 서버는 외부 시스템에서 제공된다고 가정한다."]
+    assert specification.assumptions == [
+        "이메일 서버는 외부 시스템에서 제공된다고 가정한다."
+    ]
     request = fake_client.responses.requests[0]
     assert request["model"] == "test-model"
     assert request["text"]["format"]["type"] == "json_schema"
@@ -69,12 +71,18 @@ def test_openai_parser_requests_structured_specification_and_validates_result() 
     assert requirement["required"] == list(requirement["properties"])
     assert requirement["additionalProperties"] is False
     assert any(
-        branch.get("type") == "null" for branch in requirement["properties"]["title"]["anyOf"]
+        branch.get("type") == "null"
+        for branch in requirement["properties"]["title"]["anyOf"]
     )
 
 
 def test_openai_parser_assigns_stable_ids_to_missing_requirement_ids() -> None:
-    output = {"requirements": [{"description": "첫 요구사항"}, {"description": "둘째 요구사항"}]}
+    output = {
+        "requirements": [
+            {"description": "첫 요구사항"},
+            {"description": "둘째 요구사항"},
+        ]
+    }
     parser = OpenAISpecificationParser(
         client=FakeOpenAIAPIClient([SimpleNamespace(output_text=json.dumps(output))]),
         model="test-model",

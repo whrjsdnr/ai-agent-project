@@ -160,7 +160,9 @@ class OpenAIClient:
         }
         content = cls._item_value(item, "content")
         if content is not None:
-            reasoning["content"] = cls._reasoning_parts(item, "content", "reasoning_text")
+            reasoning["content"] = cls._reasoning_parts(
+                item, "content", "reasoning_text"
+            )
         encrypted_content = cls._item_value(item, "encrypted_content")
         if isinstance(encrypted_content, str):
             reasoning["encrypted_content"] = encrypted_content
@@ -290,7 +292,6 @@ class OpenAIClient:
         self._client = OpenAI(api_key=self._api_key)
         return self._client
 
-
     @staticmethod
     def _extract_tool_calls(response: Any) -> list[ToolCall]:
         """Extract every function call requested in an OpenAI response."""
@@ -302,7 +303,9 @@ class OpenAIClient:
             try:
                 arguments = json.loads(item.arguments)
             except json.JSONDecodeError as error:
-                raise ValueError("OpenAI returned invalid function call arguments") from error
+                raise ValueError(
+                    "OpenAI returned invalid function call arguments"
+                ) from error
 
             if not isinstance(arguments, dict):
                 raise TypeError("OpenAI function call arguments must be an object")
