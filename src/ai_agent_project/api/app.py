@@ -64,6 +64,10 @@ from ai_agent_project.llm.providers.openai_research_discovery_synthesizer import
 from ai_agent_project.llm.providers.openai_research_evidence_extractor import (
     OpenAIResearchEvidenceExtractor,
 )
+from ai_agent_project.llm.providers.openai_research_implementation import (
+    OpenAIResearchImplementationGenerator,
+    OpenAIResearchImplementationPlanner,
+)
 from ai_agent_project.llm.providers.openai_research_plan_generator import (
     OpenAIResearchPlanGenerator,
 )
@@ -306,6 +310,8 @@ def create_default_research_application_service(
         discovery,
         store if store is not None else InMemoryResearchRunStore(),
         OpenAIResearchPlanGenerator(),
+        OpenAIResearchImplementationPlanner(),
+        OpenAIResearchImplementationGenerator(),
     )
 
 
@@ -477,6 +483,77 @@ def create_app(
         except InvalidResearchStateError as error:
             raise HTTPException(
                 status_code=409, detail="Research lifecycle conflict."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/implementation-plan")
+    def generate_research_implementation_plan(
+        research_run_id: str,
+    ) -> StoredResearchRun:
+        try:
+            return require_research_service().generate_implementation_plan(
+                research_run_id
+            )
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research lifecycle conflict."
+            ) from error
+        except (ResearchRunError, ValueError) as error:
+            raise HTTPException(
+                status_code=503, detail="Research implementation planning unavailable."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/implementation-plan")
+    def get_research_implementation_plan(research_run_id: str):
+        try:
+            return require_research_service().get_implementation_plan(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research implementation plan unavailable."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/implementation-package")
+    def generate_research_implementation_package(
+        research_run_id: str,
+    ) -> StoredResearchRun:
+        try:
+            return require_research_service().generate_implementation_package(
+                research_run_id
+            )
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research lifecycle conflict."
+            ) from error
+        except (ResearchRunError, ValueError) as error:
+            raise HTTPException(
+                status_code=503,
+                detail="Research implementation generation unavailable.",
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/implementation-package")
+    def get_research_implementation_package(research_run_id: str):
+        try:
+            return require_research_service().get_implementation_package(
+                research_run_id
+            )
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research implementation package unavailable."
             ) from error
 
     @app.post("/v1/agent-runs", response_model=AgentRunResponse)

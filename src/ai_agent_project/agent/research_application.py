@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict
 
 from ai_agent_project.agent.research import (
     ResearchDiscoveryReport,
+    ResearchImplementationPackage,
+    ResearchImplementationPlan,
     ResearchPlanRevision,
     ResearchPlanRevisionState,
     ResearchRequest,
@@ -14,7 +16,11 @@ from ai_agent_project.agent.research import (
     ResearchStatus,
 )
 from ai_agent_project.agent.research_discovery import ResearchDiscoveryService
-from ai_agent_project.agent.research_planning import ResearchPlanGenerator
+from ai_agent_project.agent.research_planning import (
+    ResearchImplementationGenerator,
+    ResearchImplementationPlanner,
+    ResearchPlanGenerator,
+)
 
 
 class ResearchRunError(Exception):
@@ -86,10 +92,14 @@ class ResearchApplicationService:
         discovery_service: ResearchDiscoveryService,
         store: ResearchRunStore,
         plan_generator: ResearchPlanGenerator | None = None,
+        implementation_planner: ResearchImplementationPlanner | None = None,
+        implementation_generator: ResearchImplementationGenerator | None = None,
     ) -> None:
         self._discovery_service = discovery_service
         self._store = store
         self._plan_generator = plan_generator
+        self._implementation_planner = implementation_planner
+        self._implementation_generator = implementation_generator
 
     def create_research_run(
         self, topic: str, *, user_context: str | None = None
@@ -218,6 +228,103 @@ class ResearchApplicationService:
         )
         self._store.replace(research_run_id, updated)
         return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def generate_implementation_plan(self, research_run_id: str) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if run.status is not ResearchStatus.RESEARCH_PLAN_APPROVED:
+            raise InvalidResearchStateError(
+                "Implementation planning requires an approved research plan"
+            )
+        if self._implementation_planner is None or run.plan_revision_state is None:
+            raise ResearchRunError("Research implementation planning is not configured")
+        direction = self._selected_direction(run)
+        approved_plan = run.plan_revision_state.active_plan
+        implementation_plan = self._implementation_planner.plan(
+            run.request,
+            direction,
+            approved_plan,
+            run.plan_revision_state.active_version,
+            run.report,
+        )
+        try:
+            implementation_plan.validate_against(approved_plan)
+        except ValueError as error:
+            raise ResearchRunError(
+                "Generated implementation plan is invalid"
+            ) from error
+        if (
+            implementation_plan.approved_plan_version
+            != run.plan_revision_state.active_version
+        ):
+            raise ResearchRunError("Generated implementation plan changed plan version")
+        updated = run.model_copy(
+            update={
+                "status": ResearchStatus.IMPLEMENTATION_GENERATION_STARTED,
+                "implementation_plan": implementation_plan,
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def get_implementation_plan(
+        self, research_run_id: str
+    ) -> ResearchImplementationPlan:
+        plan = self._require_run(research_run_id).implementation_plan
+        if plan is None:
+            raise InvalidResearchStateError(
+                "Research implementation plan has not been generated"
+            )
+        return plan
+
+    def generate_implementation_package(
+        self, research_run_id: str
+    ) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if run.status is not ResearchStatus.IMPLEMENTATION_GENERATION_STARTED:
+            raise InvalidResearchStateError(
+                "Implementation package generation requires an implementation plan"
+            )
+        if (
+            self._implementation_generator is None
+            or run.implementation_plan is None
+            or run.plan_revision_state is None
+        ):
+            raise ResearchRunError(
+                "Research implementation generation is not configured"
+            )
+        package = self._implementation_generator.generate(
+            run.request,
+            self._selected_direction(run),
+            run.plan_revision_state.active_plan,
+            run.implementation_plan,
+            run.report,
+        )
+        try:
+            package.validate_against(
+                run.implementation_plan, run.plan_revision_state.active_plan
+            )
+        except ValueError as error:
+            raise ResearchRunError(
+                "Generated implementation package is invalid"
+            ) from error
+        updated = run.model_copy(
+            update={
+                "status": ResearchStatus.IMPLEMENTATION_PACKAGE_READY,
+                "implementation_package": package,
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def get_implementation_package(
+        self, research_run_id: str
+    ) -> ResearchImplementationPackage:
+        package = self._require_run(research_run_id).implementation_package
+        if package is None:
+            raise InvalidResearchStateError(
+                "Research implementation package has not been generated"
+            )
+        return package
 
     @staticmethod
     def _selected_direction(run: ResearchRun):

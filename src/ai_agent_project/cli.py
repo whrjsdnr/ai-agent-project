@@ -209,6 +209,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     revise.add_argument("research_run_id")
     revise.add_argument("--note", required=True)
+    for name, help_text in (
+        ("implementation-plan", "Generate a research implementation plan"),
+        ("show-implementation-plan", "Show the generated implementation plan"),
+        ("generate-package", "Generate a non-executed implementation package"),
+        ("show-package", "Show the generated implementation package"),
+    ):
+        command = research_commands.add_parser(name, help=help_text)
+        command.add_argument("research_run_id")
     return parser
 
 
@@ -614,6 +622,26 @@ def _run_research_command(
     if arguments.command == "approve-plan":
         _print_research_plan(service.approve_plan(arguments.research_run_id), output)
         return 0
+    if arguments.command == "implementation-plan":
+        _print_implementation_plan(
+            service.generate_implementation_plan(arguments.research_run_id), output
+        )
+        return 0
+    if arguments.command == "show-implementation-plan":
+        _print_implementation_plan_value(
+            service.get_implementation_plan(arguments.research_run_id), output
+        )
+        return 0
+    if arguments.command == "generate-package":
+        _print_implementation_package(
+            service.generate_implementation_package(arguments.research_run_id), output
+        )
+        return 0
+    if arguments.command == "show-package":
+        _print_implementation_package_value(
+            service.get_implementation_package(arguments.research_run_id), output
+        )
+        return 0
     stored = service.select_research_direction(
         arguments.research_run_id, arguments.direction_id
     )
@@ -737,3 +765,42 @@ def _print_research_plan_state(state: object, output: TextIO) -> None:
     print(f"Methodology steps: {len(plan.methodology)}", file=output)
     print(f"Metrics: {len(plan.metrics)}", file=output)
     print(f"Success criteria: {len(plan.success_criteria)}", file=output)
+
+
+def _print_implementation_plan(stored: StoredResearchRun, output: TextIO) -> None:
+    plan = stored.research_run.implementation_plan
+    if plan is None:
+        raise CliError("Research implementation plan is missing")
+    print(f"Status: {stored.research_run.status}", file=output)
+    _print_implementation_plan_value(plan, output)
+
+
+def _print_implementation_plan_value(plan: object, output: TextIO) -> None:
+    from ai_agent_project.agent.research import ResearchImplementationPlan
+
+    if not isinstance(plan, ResearchImplementationPlan):
+        raise CliError("Stored research implementation plan is invalid")
+    print("Generated only; not executed.", file=output)
+    print(f"Approved plan version: {plan.approved_plan_version}", file=output)
+    print(f"Tasks: {len(plan.tasks)}", file=output)
+    for task in plan.tasks:
+        print(f"- {task.task_id}: {task.title}", file=output)
+
+
+def _print_implementation_package(stored: StoredResearchRun, output: TextIO) -> None:
+    package = stored.research_run.implementation_package
+    if package is None:
+        raise CliError("Research implementation package is missing")
+    print(f"Status: {stored.research_run.status}", file=output)
+    _print_implementation_package_value(package, output)
+
+
+def _print_implementation_package_value(package: object, output: TextIO) -> None:
+    from ai_agent_project.agent.research import ResearchImplementationPackage
+
+    if not isinstance(package, ResearchImplementationPackage):
+        raise CliError("Stored research implementation package is invalid")
+    print("Generated only; not executed.", file=output)
+    print(f"Artifacts: {len(package.artifacts)}", file=output)
+    print("Execution guide:", file=output)
+    print(package.execution_guide, file=output)

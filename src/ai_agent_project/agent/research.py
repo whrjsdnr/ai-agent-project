@@ -1,6 +1,7 @@
 """Evidence-first, read-only Research Discovery domain models."""
 
 from enum import StrEnum
+from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -26,6 +27,8 @@ class ResearchStatus(StrEnum):
     COMPLETED_DISCOVERY = "completed_discovery"
     AWAITING_RESEARCH_PLAN_APPROVAL = "awaiting_research_plan_approval"
     RESEARCH_PLAN_APPROVED = "research_plan_approved"
+    IMPLEMENTATION_GENERATION_STARTED = "implementation_generation_started"
+    IMPLEMENTATION_PACKAGE_READY = "implementation_package_ready"
 
 
 class ResearchScope(StrEnum):
@@ -338,6 +341,229 @@ class ResearchPlanRevisionState(BaseModel):
         return self.revisions[-1].plan
 
 
+def _safe_relative_path(value: str) -> str:
+    path = PurePosixPath(value)
+    windows_path = PureWindowsPath(value)
+    if (
+        not value.strip()
+        or path.is_absolute()
+        or windows_path.is_absolute()
+        or ".." in path.parts
+        or ".." in windows_path.parts
+    ):
+        raise ValueError("Research artifact paths must be safe relative paths")
+    return value
+
+
+class ResearchArtifactType(StrEnum):
+    SOURCE = "source"
+    TEST = "test"
+    CONFIG = "config"
+    SCRIPT = "script"
+    DOCUMENTATION = "documentation"
+    EVALUATION = "evaluation"
+    OTHER = "other"
+
+
+class ResearchImplementationTask(BaseModel):
+    """One non-executing task derived from an approved research plan."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str = Field(min_length=1)
+    title: str
+    description: str
+    objective_ids: tuple[str, ...] = ()
+    methodology_step_ids: tuple[str, ...] = ()
+    metric_ids: tuple[str, ...] = ()
+    expected_artifact_paths: tuple[str, ...] = ()
+    dependencies: tuple[str, ...] = ()
+    validation_guidance: tuple[str, ...] = ()
+
+    _validate_id = field_validator("task_id")(_nonblank_identifier)
+    _validate_paths = field_validator("expected_artifact_paths")(
+        lambda values: tuple(_safe_relative_path(value) for value in values)
+    )
+
+
+class ResearchImplementationPlan(BaseModel):
+    """Traceable generated-only implementation plan for an approved plan."""
+
+    model_config = ConfigDict(frozen=True)
+
+    selected_direction_id: str = Field(min_length=1)
+    approved_plan_version: int = Field(ge=1)
+    tasks: tuple[ResearchImplementationTask, ...] = ()
+    package_summary: str
+
+    _validate_direction_id = field_validator("selected_direction_id")(
+        _nonblank_identifier
+    )
+
+    @model_validator(mode="after")
+    def validate_internal_references(self) -> "ResearchImplementationPlan":
+        task_ids = {task.task_id for task in self.tasks}
+        if len(task_ids) != len(self.tasks):
+            raise ValueError(
+                "Duplicate research implementation task IDs are not allowed"
+            )
+        if any(not set(task.dependencies) <= task_ids for task in self.tasks):
+            raise ValueError(
+                "Research implementation task references unknown dependency"
+            )
+        graph = {task.task_id: task.dependencies for task in self.tasks}
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(task_id: str) -> None:
+            if task_id in visiting:
+                raise ValueError(
+                    "Research implementation task dependencies must be acyclic"
+                )
+            if task_id in visited:
+                return
+            visiting.add(task_id)
+            for dependency in graph[task_id]:
+                visit(dependency)
+            visiting.remove(task_id)
+            visited.add(task_id)
+
+        for task_id in graph:
+            visit(task_id)
+        return self
+
+    def validate_against(
+        self, approved_plan: ResearchPlan
+    ) -> "ResearchImplementationPlan":
+        if self.selected_direction_id != approved_plan.selected_direction_id:
+            raise ValueError(
+                "Research implementation plan changed the selected direction"
+            )
+        objective_ids = {item.id for item in approved_plan.objectives}
+        methodology_ids = {item.id for item in approved_plan.methodology}
+        metric_ids = {item.id for item in approved_plan.metrics}
+        for task in self.tasks:
+            if not set(task.objective_ids) <= objective_ids:
+                raise ValueError(
+                    "Research implementation task references unknown objective"
+                )
+            if not set(task.methodology_step_ids) <= methodology_ids:
+                raise ValueError(
+                    "Research implementation task references unknown methodology step"
+                )
+            if not set(task.metric_ids) <= metric_ids:
+                raise ValueError(
+                    "Research implementation task references unknown metric"
+                )
+        return self
+
+
+class ResearchGeneratedArtifact(BaseModel):
+    """Generated text only; Researcher Mode never executes this artifact."""
+
+    model_config = ConfigDict(frozen=True)
+
+    artifact_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    relative_path: str
+    artifact_type: ResearchArtifactType
+    content: str = Field(min_length=1)
+    objective_ids: tuple[str, ...] = ()
+    methodology_step_ids: tuple[str, ...] = ()
+    metric_ids: tuple[str, ...] = ()
+
+    _validate_id = field_validator("artifact_id")(_nonblank_identifier)
+    _validate_task_id = field_validator("task_id")(_nonblank_identifier)
+    _validate_path = field_validator("relative_path")(_safe_relative_path)
+
+
+class ResearchGeneratedArtifactPayload(BaseModel):
+    """LLM-owned content only; task traceability is injected by trusted code."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str = Field(min_length=1)
+    relative_path: str
+    artifact_type: ResearchArtifactType
+    content: str = Field(min_length=1)
+
+    _validate_task_id = field_validator("task_id")(_nonblank_identifier)
+    _validate_path = field_validator("relative_path")(_safe_relative_path)
+
+
+class ResearchImplementationPackagePayload(BaseModel):
+    """Strict LLM response containing only newly generated package content."""
+
+    model_config = ConfigDict(frozen=True)
+
+    artifacts: tuple[ResearchGeneratedArtifactPayload, ...] = ()
+    execution_guide: str
+    environment_assumptions: tuple[str, ...] = ()
+    unresolved_user_inputs: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+class ResearchImplementationPackage(BaseModel):
+    """Persisted generated package metadata, with no materialization implied."""
+
+    model_config = ConfigDict(frozen=True)
+
+    implementation_plan: ResearchImplementationPlan
+    artifacts: tuple[ResearchGeneratedArtifact, ...] = ()
+    execution_guide: str
+    environment_assumptions: tuple[str, ...] = ()
+    unresolved_user_inputs: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    generated_not_executed: bool = True
+
+    @model_validator(mode="after")
+    def validate_generated_only(self) -> "ResearchImplementationPackage":
+        if not self.generated_not_executed:
+            raise ValueError("Research implementation packages must be generated only")
+        artifact_ids = {artifact.artifact_id for artifact in self.artifacts}
+        paths = {artifact.relative_path for artifact in self.artifacts}
+        if len(artifact_ids) != len(self.artifacts):
+            raise ValueError(
+                "Duplicate research generated artifact IDs are not allowed"
+            )
+        if len(paths) != len(self.artifacts):
+            raise ValueError(
+                "Duplicate research generated artifact paths are not allowed"
+            )
+        return self
+
+    def validate_against(
+        self,
+        implementation_plan: ResearchImplementationPlan,
+        approved_plan: ResearchPlan,
+    ) -> "ResearchImplementationPackage":
+        if self.implementation_plan != implementation_plan:
+            raise ValueError(
+                "Research implementation package changed its implementation plan"
+            )
+        implementation_plan.validate_against(approved_plan)
+        tasks = {task.task_id: task for task in implementation_plan.tasks}
+        for artifact in self.artifacts:
+            task = tasks.get(artifact.task_id)
+            if task is None:
+                raise ValueError(
+                    "Research artifact references unknown implementation task"
+                )
+            if artifact.relative_path not in task.expected_artifact_paths:
+                raise ValueError("Research artifact path was not declared by its task")
+            if not set(artifact.objective_ids) <= set(task.objective_ids):
+                raise ValueError(
+                    "Research artifact references objective outside its task"
+                )
+            if not set(artifact.methodology_step_ids) <= set(task.methodology_step_ids):
+                raise ValueError(
+                    "Research artifact references methodology outside its task"
+                )
+            if not set(artifact.metric_ids) <= set(task.metric_ids):
+                raise ValueError("Research artifact references metric outside its task")
+        return self
+
+
 class ResearchQuestionSet(BaseModel):
     """Fixed-schema structured-output envelope for question planning."""
 
@@ -466,6 +692,8 @@ class ResearchRun(BaseModel):
     report: ResearchDiscoveryReport
     selected_direction_id: str | None = None
     plan_revision_state: ResearchPlanRevisionState | None = None
+    implementation_plan: ResearchImplementationPlan | None = None
+    implementation_package: ResearchImplementationPackage | None = None
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResearchRun":
@@ -481,6 +709,8 @@ class ResearchRun(BaseModel):
                 ResearchStatus.DIRECTION_SELECTED,
                 ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL,
                 ResearchStatus.RESEARCH_PLAN_APPROVED,
+                ResearchStatus.IMPLEMENTATION_GENERATION_STARTED,
+                ResearchStatus.IMPLEMENTATION_PACKAGE_READY,
             }
             and self.selected_direction_id is None
         ):
@@ -493,6 +723,8 @@ class ResearchRun(BaseModel):
         if self.plan_revision_state is not None and self.status not in {
             ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL,
             ResearchStatus.RESEARCH_PLAN_APPROVED,
+            ResearchStatus.IMPLEMENTATION_GENERATION_STARTED,
+            ResearchStatus.IMPLEMENTATION_PACKAGE_READY,
         }:
             raise ValueError("Research plan state requires a planning lifecycle status")
         if self.status is ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL and (
@@ -505,4 +737,36 @@ class ResearchRun(BaseModel):
             self.plan_revision_state is None or not self.plan_revision_state.approved
         ):
             raise ValueError("Approved research-plan status requires an approved plan")
+        if self.implementation_plan is not None:
+            if (
+                self.plan_revision_state is None
+                or not self.plan_revision_state.approved
+            ):
+                raise ValueError("Implementation generation requires an approved plan")
+            self.implementation_plan.validate_against(
+                self.plan_revision_state.active_plan
+            )
+            if (
+                self.implementation_plan.approved_plan_version
+                != self.plan_revision_state.active_version
+            ):
+                raise ValueError(
+                    "Implementation plan must reference the approved plan version"
+                )
+        if self.implementation_package is not None:
+            if self.implementation_plan is None or self.plan_revision_state is None:
+                raise ValueError(
+                    "Implementation package requires an implementation plan"
+                )
+            self.implementation_package.validate_against(
+                self.implementation_plan, self.plan_revision_state.active_plan
+            )
+        if self.status is ResearchStatus.IMPLEMENTATION_GENERATION_STARTED and (
+            self.implementation_plan is None or self.implementation_package is not None
+        ):
+            raise ValueError("Implementation generation started requires only a plan")
+        if self.status is ResearchStatus.IMPLEMENTATION_PACKAGE_READY and (
+            self.implementation_package is None
+        ):
+            raise ValueError("Implementation package ready requires a package")
         return self
