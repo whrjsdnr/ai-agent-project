@@ -10,6 +10,8 @@ from ai_agent_project.agent.research import (
     ResearchPlan,
     ResearchQuestion,
     ResearchRequest,
+    ResearchResultAnalysisPayload,
+    ResearchResultSubmission,
 )
 from ai_agent_project.agent.workspace import WorkspaceSnapshot
 
@@ -57,3 +59,14 @@ class ResearchImplementationGenerator(Protocol):
         implementation_plan: ResearchImplementationPlan,
         report: ResearchDiscoveryReport,
     ) -> ResearchImplementationPackage: ...
+
+
+class ResearchResultAnalyzer(Protocol):
+    """Interpret supplied results only; it never executes a research workload."""
+
+    def analyze(
+        self,
+        approved_plan: ResearchPlan,
+        implementation_plan: ResearchImplementationPlan,
+        submission: ResearchResultSubmission,
+    ) -> ResearchResultAnalysisPayload: ...

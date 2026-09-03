@@ -9,9 +9,12 @@ from ai_agent_project.agent.research import (
     ResearchDiscoveryReport,
     ResearchImplementationPackage,
     ResearchImplementationPlan,
+    ResearchMetricAssessment,
     ResearchPlanRevision,
     ResearchPlanRevisionState,
     ResearchRequest,
+    ResearchResultAnalysis,
+    ResearchResultSubmission,
     ResearchRun,
     ResearchStatus,
 )
@@ -20,6 +23,7 @@ from ai_agent_project.agent.research_planning import (
     ResearchImplementationGenerator,
     ResearchImplementationPlanner,
     ResearchPlanGenerator,
+    ResearchResultAnalyzer,
 )
 
 
@@ -41,6 +45,10 @@ class ResearchDirectionNotFoundError(ResearchRunError):
 
 class InvalidResearchStateError(ResearchRunError):
     """Raised when a research lifecycle transition is not permitted."""
+
+
+class ResearchResultsNotProvidedError(ResearchRunError):
+    """Raised when analysis is requested without authoritative user results."""
 
 
 class ResearchRunStore(Protocol):
@@ -94,12 +102,14 @@ class ResearchApplicationService:
         plan_generator: ResearchPlanGenerator | None = None,
         implementation_planner: ResearchImplementationPlanner | None = None,
         implementation_generator: ResearchImplementationGenerator | None = None,
+        result_analyzer: ResearchResultAnalyzer | None = None,
     ) -> None:
         self._discovery_service = discovery_service
         self._store = store
         self._plan_generator = plan_generator
         self._implementation_planner = implementation_planner
         self._implementation_generator = implementation_generator
+        self._result_analyzer = result_analyzer
 
     def create_research_run(
         self, topic: str, *, user_context: str | None = None
@@ -325,6 +335,253 @@ class ResearchApplicationService:
                 "Research implementation package has not been generated"
             )
         return package
+
+    def prepare_result_submission(self, research_run_id: str) -> str:
+        run = self._require_run(research_run_id)
+        if run.status is ResearchStatus.IMPLEMENTATION_PACKAGE_READY:
+            updated = run.model_copy(
+                update={"status": ResearchStatus.AWAITING_USER_RESULTS}
+            )
+            self._store.replace(research_run_id, updated)
+            run = updated
+        if run.status is not ResearchStatus.AWAITING_USER_RESULTS:
+            raise InvalidResearchStateError(
+                "Result guidance requires a ready implementation package"
+            )
+        return self._result_guide(research_run_id, run)
+
+    def submit_results(
+        self, research_run_id: str, submission: ResearchResultSubmission
+    ) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if run.status is not ResearchStatus.AWAITING_USER_RESULTS:
+            raise InvalidResearchStateError(
+                "Result submission is not allowed in this state"
+            )
+        self._validate_submission(research_run_id, run, submission)
+        updated = run.model_copy(
+            update={
+                "status": ResearchStatus.RESEARCH_RESULTS_SUBMITTED,
+                "result_submission": submission,
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def get_results(self, research_run_id: str) -> ResearchResultSubmission:
+        submission = self._require_run(research_run_id).result_submission
+        if submission is None:
+            raise ResearchResultsNotProvidedError(
+                "Research results have not been submitted"
+            )
+        return submission
+
+    def analyze_results(self, research_run_id: str) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if run.result_submission is None:
+            raise ResearchResultsNotProvidedError(
+                "Submit user execution results before requesting analysis"
+            )
+        if run.status is not ResearchStatus.RESEARCH_RESULTS_SUBMITTED:
+            raise InvalidResearchStateError("Research results analysis is not allowed")
+        if (
+            self._result_analyzer is None
+            or run.implementation_plan is None
+            or run.plan_revision_state is None
+        ):
+            raise ResearchRunError("Research results analysis is not configured")
+        payload = self._result_analyzer.analyze(
+            run.plan_revision_state.active_plan,
+            run.implementation_plan,
+            run.result_submission,
+        )
+        analysis = self._compose_analysis(run, payload)
+        updated = run.model_copy(
+            update={
+                "status": ResearchStatus.RESEARCH_RESULTS_ANALYZED,
+                "result_analysis": analysis,
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def get_result_analysis(self, research_run_id: str) -> ResearchResultAnalysis:
+        analysis = self._require_run(research_run_id).result_analysis
+        if analysis is None:
+            raise InvalidResearchStateError("Research results have not been analyzed")
+        return analysis
+
+    @staticmethod
+    def _result_guide(research_run_id: str, run: ResearchRun) -> str:
+        version = (
+            run.plan_revision_state.active_version if run.plan_revision_state else "-"
+        )
+        return "\n".join(
+            (
+                "# Research Execution Result",
+                "",
+                "## 1. Execution Metadata",
+                f"- Research Run ID: {research_run_id}",
+                f"- Approved Plan Version: {version}",
+                "- Executed By:",
+                "- Execution Date:",
+                "- Environment:",
+                "- OS:",
+                "- Python Version:",
+                "- GPU / Accelerator:",
+                "- Framework:",
+                "",
+                "## 2. Executed Tasks",
+                "- Task ID / Objective IDs / Methodology Step IDs / Metric IDs / Execution Status:",
+                "",
+                "## 3. Execution Command",
+                "## 4. Configuration",
+                "## 5. Results",
+                "Metric ID | Value | Unit | Status | Notes",
+                "## 6. Baseline Comparison",
+                "## 7. Logs / Errors",
+                "## 8. Generated Outputs",
+                "## 9. User Observations",
+                "## 10. Missing / Unexecuted Items",
+                "",
+                'Write "not executed" for experiments that were not run.',
+                'Write "not measured" for metrics that were not measured.',
+                "Do not estimate missing values or report predicted values as measured results.",
+            )
+        )
+
+    @staticmethod
+    def _validate_submission(
+        research_run_id: str, run: ResearchRun, submission: ResearchResultSubmission
+    ) -> None:
+        if run.implementation_plan is None or run.plan_revision_state is None:
+            raise InvalidResearchStateError(
+                "Research implementation package is missing"
+            )
+        if submission.research_run_id != research_run_id:
+            raise ResearchRunError(
+                "Result submission references a different research run"
+            )
+        if submission.approved_plan_version != run.plan_revision_state.active_version:
+            raise ResearchRunError(
+                "Result submission references a different approved plan"
+            )
+        if (
+            submission.implementation_plan_version
+            != run.implementation_plan.approved_plan_version
+        ):
+            raise ResearchRunError(
+                "Result submission references a different implementation plan"
+            )
+        tasks = {task.task_id: task for task in run.implementation_plan.tasks}
+        objective_ids = {
+            item.id for item in run.plan_revision_state.active_plan.objectives
+        }
+        methodology_ids = {
+            item.id for item in run.plan_revision_state.active_plan.methodology
+        }
+        metric_ids = {item.id for item in run.plan_revision_state.active_plan.metrics}
+        for result in submission.task_results:
+            task = tasks.get(result.task_id)
+            if task is None:
+                raise ResearchRunError(
+                    "Result submission references unknown implementation task"
+                )
+            if not set(result.objective_ids) <= objective_ids:
+                raise ResearchRunError("Result submission references unknown objective")
+            if not set(result.methodology_step_ids) <= methodology_ids:
+                raise ResearchRunError(
+                    "Result submission references unknown methodology"
+                )
+            if not set(result.metric_ids) <= metric_ids:
+                raise ResearchRunError("Result submission references unknown metric")
+            if result.execution_status.value == "not_executed" and result.metric_ids:
+                raise ResearchRunError(
+                    "Not-executed task results must not claim metrics"
+                )
+        observations = (
+            *submission.metric_observations,
+            *(
+                item
+                for baseline in submission.baseline_observations
+                for item in baseline.metrics
+            ),
+        )
+        if any(item.metric_id not in metric_ids for item in observations):
+            raise ResearchRunError("Result submission references unknown metric")
+
+    @staticmethod
+    def _compose_analysis(run: ResearchRun, payload) -> ResearchResultAnalysis:
+        assert run.result_submission is not None
+        assert run.plan_revision_state is not None
+        metric_values = {
+            item.metric_id: item for item in run.result_submission.metric_observations
+        }
+        metric_ids = {item.id for item in run.plan_revision_state.active_plan.metrics}
+        objective_ids = {
+            item.id for item in run.plan_revision_state.active_plan.objectives
+        }
+        criterion_ids = {
+            item.id for item in run.plan_revision_state.active_plan.success_criteria
+        }
+        evidence_refs = {
+            *(
+                f"metric:{item.metric_id}"
+                for item in run.result_submission.metric_observations
+            ),
+            *(f"task:{item.task_id}" for item in run.result_submission.task_results),
+        }
+        if any(item.metric_id not in metric_ids for item in payload.metric_assessments):
+            raise ResearchRunError("Result analysis references unknown metric")
+        if any(
+            item.objective_id not in objective_ids
+            for item in payload.objective_assessments
+        ):
+            raise ResearchRunError("Result analysis references unknown objective")
+        if any(
+            item.criterion_id not in criterion_ids
+            for item in payload.success_criterion_assessments
+        ):
+            raise ResearchRunError(
+                "Result analysis references unknown success criterion"
+            )
+        all_refs = (
+            *(item.evidence_refs for item in payload.metric_assessments),
+            *(item.evidence_refs for item in payload.objective_assessments),
+            *(item.evidence_refs for item in payload.findings),
+        )
+        if any(not set(refs) <= evidence_refs for refs in all_refs):
+            raise ResearchRunError(
+                "Result analysis references unknown empirical evidence"
+            )
+        assessments = tuple(
+            ResearchMetricAssessment(
+                metric_id=item.metric_id,
+                observed_value=metric_values[item.metric_id].value
+                if item.metric_id in metric_values
+                else None,
+                observation_status=metric_values[item.metric_id].status
+                if item.metric_id in metric_values
+                else "not_measured",
+                assessment="not_measured"
+                if item.metric_id not in metric_values
+                or metric_values[item.metric_id].status.value == "not_measured"
+                else item.assessment,
+                rationale=item.rationale,
+                evidence_refs=item.evidence_refs,
+            )
+            for item in payload.metric_assessments
+        )
+        return ResearchResultAnalysis(
+            metric_assessments=assessments,
+            success_criterion_assessments=payload.success_criterion_assessments,
+            objective_assessments=payload.objective_assessments,
+            findings=payload.findings,
+            anomalies=payload.anomalies,
+            limitations=payload.limitations,
+            missing_evidence=payload.missing_evidence,
+            recommended_next_steps=payload.recommended_next_steps,
+        )
 
     @staticmethod
     def _selected_direction(run: ResearchRun):

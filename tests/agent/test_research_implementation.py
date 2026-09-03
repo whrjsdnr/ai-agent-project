@@ -14,23 +14,31 @@ from ai_agent_project.agent.research import (
     ResearchImplementationPackage,
     ResearchImplementationPlan,
     ResearchImplementationTask,
+    ResearchMeasurementStatus,
     ResearchMethodologyStep,
     ResearchMetric,
+    ResearchMetricAssessmentPayload,
+    ResearchMetricObservation,
     ResearchObjective,
     ResearchPlan,
     ResearchPlanRevisionState,
     ResearchQuestion,
     ResearchRequest,
+    ResearchResultAnalysisPayload,
+    ResearchResultSubmission,
     ResearchRun,
     ResearchScope,
     ResearchSource,
     ResearchStatus,
+    ResearchTaskExecutionStatus,
+    ResearchTaskResult,
 )
 from ai_agent_project.agent.research_application import (
     InMemoryResearchRunStore,
     InvalidResearchStateError,
     ResearchApplicationService,
 )
+from ai_agent_project.agent.research_file_store import FileResearchRunStore
 
 
 def _report() -> ResearchDiscoveryReport:
@@ -295,3 +303,101 @@ def test_package_rejects_duplicate_paths_and_orphan_artifact() -> None:
                 ),
             ),
         ).validate_against(plan, _approved_run().plan_revision_state.active_plan)
+
+
+def test_result_intake_preserves_user_values_without_execution() -> None:
+    class Analyzer:
+        def analyze(self, approved_plan, implementation_plan, submission):
+            del approved_plan, implementation_plan, submission
+            return ResearchResultAnalysisPayload(
+                metric_assessments=(
+                    ResearchMetricAssessmentPayload(
+                        metric_id="MET-1",
+                        assessment="met",
+                        rationale="Observed result",
+                        evidence_refs=("metric:MET-1",),
+                    ),
+                ),
+                missing_evidence=("A separate metric was not measured.",),
+            )
+
+    store = InMemoryResearchRunStore()
+    ready = _approved_run().model_copy(
+        update={
+            "status": ResearchStatus.IMPLEMENTATION_PACKAGE_READY,
+            "implementation_plan": _implementation_plan(),
+            "implementation_package": _package(_implementation_plan()),
+        }
+    )
+    store.create("run", ready)
+    service = ResearchApplicationService(object(), store, result_analyzer=Analyzer())
+    guide = service.prepare_result_submission("run")
+    assert "not executed" in guide and "not measured" in guide
+    submission = ResearchResultSubmission(
+        research_run_id="run",
+        approved_plan_version=1,
+        implementation_plan_version=1,
+        task_results=(
+            ResearchTaskResult(
+                task_id="TASK-1",
+                objective_ids=("OBJ-1",),
+                methodology_step_ids=("METHOD-1",),
+                metric_ids=("MET-1",),
+                execution_status=ResearchTaskExecutionStatus.EXECUTED,
+            ),
+        ),
+        metric_observations=(
+            ResearchMetricObservation(
+                metric_id="MET-1", value=0.75, status=ResearchMeasurementStatus.MEASURED
+            ),
+        ),
+    )
+    submitted = service.submit_results("run", submission)
+    analyzed = service.analyze_results("run")
+    assert submitted.research_run.status is ResearchStatus.RESEARCH_RESULTS_SUBMITTED
+    assert (
+        analyzed.research_run.result_analysis.metric_assessments[0].observed_value
+        == 0.75
+    )
+    assert analyzed.research_run.status is ResearchStatus.RESEARCH_RESULTS_ANALYZED
+
+
+def test_file_store_round_trips_result_submission_and_analysis(tmp_path) -> None:
+    class Analyzer:
+        def analyze(self, approved_plan, implementation_plan, submission):
+            del approved_plan, implementation_plan, submission
+            return ResearchResultAnalysisPayload(missing_evidence=("missing",))
+
+    root = tmp_path / "runs"
+    ready = _approved_run().model_copy(
+        update={
+            "status": ResearchStatus.IMPLEMENTATION_PACKAGE_READY,
+            "implementation_plan": _implementation_plan(),
+            "implementation_package": _package(_implementation_plan()),
+        }
+    )
+    store = FileResearchRunStore(root)
+    run_id = "00000000-0000-4000-8000-000000000001"
+    store.create(run_id, ready)
+    service = ResearchApplicationService(object(), store, result_analyzer=Analyzer())
+    service.prepare_result_submission(run_id)
+    submission = ResearchResultSubmission(
+        research_run_id=run_id,
+        approved_plan_version=1,
+        implementation_plan_version=1,
+        metric_observations=(
+            ResearchMetricObservation(
+                metric_id="MET-1",
+                value="exact",
+                status=ResearchMeasurementStatus.MEASURED,
+            ),
+        ),
+    )
+    service.submit_results(run_id, submission)
+    analyzed = service.analyze_results(run_id)
+    restored = ResearchApplicationService(
+        object(), FileResearchRunStore(root)
+    ).get_research_run(run_id)
+    assert restored.research_run == analyzed.research_run
+    assert restored.research_run.result_submission == submission
+    assert restored.research_run.status is ResearchStatus.RESEARCH_RESULTS_ANALYZED

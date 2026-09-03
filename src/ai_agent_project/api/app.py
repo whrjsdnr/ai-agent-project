@@ -37,6 +37,7 @@ from ai_agent_project.agent.research_application import (
     InvalidResearchStateError,
     ResearchApplicationService,
     ResearchDirectionNotFoundError,
+    ResearchResultsNotProvidedError,
     ResearchRunError,
     ResearchRunNotFoundError,
     StoredResearchRun,
@@ -73,6 +74,9 @@ from ai_agent_project.llm.providers.openai_research_plan_generator import (
 )
 from ai_agent_project.llm.providers.openai_research_question_planner import (
     OpenAIResearchQuestionPlanner,
+)
+from ai_agent_project.llm.providers.openai_research_result_analyzer import (
+    OpenAIResearchResultAnalyzer,
 )
 from ai_agent_project.llm.providers.openai_specification import (
     OpenAISpecificationParser,
@@ -312,6 +316,7 @@ def create_default_research_application_service(
         OpenAIResearchPlanGenerator(),
         OpenAIResearchImplementationPlanner(),
         OpenAIResearchImplementationGenerator(),
+        OpenAIResearchResultAnalyzer(),
     )
 
 
@@ -554,6 +559,87 @@ def create_app(
         except InvalidResearchStateError as error:
             raise HTTPException(
                 status_code=409, detail="Research implementation package unavailable."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/result-guide")
+    def get_research_result_guide(research_run_id: str):
+        try:
+            return {
+                "result_guide": require_research_service().prepare_result_submission(
+                    research_run_id
+                )
+            }
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research lifecycle conflict."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/results")
+    def submit_research_results(research_run_id: str, submission: dict):
+        from ai_agent_project.agent.research import ResearchResultSubmission
+
+        try:
+            return require_research_service().submit_results(
+                research_run_id, ResearchResultSubmission.model_validate(submission)
+            )
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research lifecycle conflict."
+            ) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422, detail="Invalid result submission."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/results")
+    def get_research_results(research_run_id: str):
+        try:
+            return require_research_service().get_results(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except ResearchResultsNotProvidedError as error:
+            raise HTTPException(
+                status_code=409, detail="Research results not provided."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/analysis")
+    def analyze_research_results(research_run_id: str):
+        try:
+            return require_research_service().analyze_results(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except (InvalidResearchStateError, ResearchResultsNotProvidedError) as error:
+            raise HTTPException(
+                status_code=409, detail="Research results not ready for analysis."
+            ) from error
+        except (ResearchRunError, ValueError) as error:
+            raise HTTPException(
+                status_code=503, detail="Research analysis unavailable."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/analysis")
+    def get_research_analysis(research_run_id: str):
+        try:
+            return require_research_service().get_result_analysis(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research analysis unavailable."
             ) from error
 
     @app.post("/v1/agent-runs", response_model=AgentRunResponse)

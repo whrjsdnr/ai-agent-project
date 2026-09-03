@@ -204,6 +204,19 @@ def _build_parser() -> argparse.ArgumentParser:
     ):
         command = research_commands.add_parser(name, help=help_text)
         command.add_argument("research_run_id")
+    for name, help_text in (
+        ("result-guide", "Show deterministic user result-submission guidance"),
+        ("show-results", "Show submitted user research results"),
+        ("analyze-results", "Analyze submitted user research results"),
+        ("show-analysis", "Show persisted research result analysis"),
+    ):
+        command = research_commands.add_parser(name, help=help_text)
+        command.add_argument("research_run_id")
+    submit_results = research_commands.add_parser(
+        "submit-results", help="Submit user-supplied result JSON"
+    )
+    submit_results.add_argument("research_run_id")
+    submit_results.add_argument("result_json_file", type=Path)
     revise = research_commands.add_parser(
         "revise-plan", help="Revise the research plan"
     )
@@ -640,6 +653,57 @@ def _run_research_command(
     if arguments.command == "show-package":
         _print_implementation_package_value(
             service.get_implementation_package(arguments.research_run_id), output
+        )
+        return 0
+    if arguments.command == "result-guide":
+        print(service.prepare_result_submission(arguments.research_run_id), file=output)
+        return 0
+    if arguments.command == "submit-results":
+        from ai_agent_project.agent.research import ResearchResultSubmission
+
+        result_path = _resolve_path(arguments.result_json_file, cwd)
+        try:
+            submission = ResearchResultSubmission.model_validate_json(
+                result_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as error:
+            raise CliError(
+                f"Could not read valid result JSON: {result_path}"
+            ) from error
+        stored = service.submit_results(arguments.research_run_id, submission)
+        print(f"Status: {stored.research_run.status}", file=output)
+        return 0
+    if arguments.command == "show-results":
+        print(
+            json.dumps(
+                service.get_results(arguments.research_run_id).model_dump(mode="json"),
+                ensure_ascii=False,
+            ),
+            file=output,
+        )
+        return 0
+    if arguments.command == "analyze-results":
+        from ai_agent_project.agent.research_application import (
+            ResearchResultsNotProvidedError,
+        )
+
+        try:
+            stored = service.analyze_results(arguments.research_run_id)
+        except ResearchResultsNotProvidedError as error:
+            raise CliError(
+                "Use result-guide and submit-results before analysis"
+            ) from error
+        print(f"Status: {stored.research_run.status}", file=output)
+        return 0
+    if arguments.command == "show-analysis":
+        print(
+            json.dumps(
+                service.get_result_analysis(arguments.research_run_id).model_dump(
+                    mode="json"
+                ),
+                ensure_ascii=False,
+            ),
+            file=output,
         )
         return 0
     stored = service.select_research_direction(
