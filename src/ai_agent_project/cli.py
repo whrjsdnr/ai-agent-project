@@ -18,6 +18,16 @@ from ai_agent_project.agent.project_file_store import (
     ProjectRunStorageError,
     default_project_run_store_root,
 )
+from ai_agent_project.agent.research_application import (
+    ResearchApplicationService,
+    ResearchRunError,
+    StoredResearchRun,
+)
+from ai_agent_project.agent.research_file_store import (
+    FileResearchRunStore,
+    ResearchRunStorageError,
+    default_research_run_store_root,
+)
 
 
 class CliError(Exception):
@@ -25,6 +35,9 @@ class CliError(Exception):
 
 
 ProjectServiceBuilder = Callable[[Path, FileProjectRunStore], ProjectApplicationService]
+ResearchServiceBuilder = Callable[
+    [Path, FileResearchRunStore], ResearchApplicationService
+]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -38,6 +51,7 @@ def run_cli(
     cwd: Path | None = None,
     store_root: Path | None = None,
     service_builder: ProjectServiceBuilder | None = None,
+    research_service_builder: ResearchServiceBuilder | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -47,10 +61,26 @@ def run_cli(
     parser = _build_parser()
     arguments = parser.parse_args(list(argv))
     current_directory = (cwd or Path.cwd()).resolve()
-    resolved_store_root = _resolve_store_root(arguments.store_root, store_root)
+    resolved_store_root = _resolve_store_root(
+        getattr(arguments, "store_root", None),
+        store_root,
+        default=(
+            default_research_run_store_root()
+            if arguments.top_level == "research"
+            else default_project_run_store_root()
+        ),
+    )
     build_service = service_builder or _build_production_service
 
     try:
+        if arguments.top_level == "research":
+            return _run_research_command(
+                arguments,
+                current_directory,
+                resolved_store_root,
+                research_service_builder or _build_production_research_service,
+                output,
+            )
         if arguments.command == "create":
             return _create_project(
                 arguments, current_directory, resolved_store_root, build_service, output
@@ -69,6 +99,8 @@ def run_cli(
         CliError,
         ProjectRunError,
         ProjectRunStorageError,
+        ResearchRunError,
+        ResearchRunStorageError,
         OSError,
         UnicodeError,
         ValueError,
@@ -138,6 +170,33 @@ def _build_parser() -> argparse.ArgumentParser:
         decision_parser.add_argument("project_run_id")
         decision_parser.add_argument("--note")
         decision_parser.set_defaults(decision=decision)
+
+    research = top_level.add_parser(
+        "research", help="Discover and review research directions"
+    )
+    research.add_argument("--store-root", type=Path)
+    research_commands = research.add_subparsers(dest="command", required=True)
+    research_create = research_commands.add_parser(
+        "create", help="Create a research discovery run"
+    )
+    research_create.add_argument("request_file", type=Path)
+    research_create.add_argument("--workspace", type=Path)
+    research_status = research_commands.add_parser("status", help="Show a research run")
+    research_status.add_argument("research_run_id")
+    research_report = research_commands.add_parser(
+        "report", help="Show the structured discovery report"
+    )
+    research_report.add_argument("research_run_id")
+    research_report.add_argument("--json", action="store_true", dest="as_json")
+    research_directions = research_commands.add_parser(
+        "directions", help="List selectable research directions"
+    )
+    research_directions.add_argument("research_run_id")
+    research_select = research_commands.add_parser(
+        "select-direction", help="Select one research direction"
+    )
+    research_select.add_argument("research_run_id")
+    research_select.add_argument("direction_id")
     return parser
 
 
@@ -276,8 +335,10 @@ def _resolve_path(path: Path, cwd: Path) -> Path:
 def _resolve_store_root(
     argument_root: Path | None,
     injected_root: Path | None,
+    *,
+    default: Path | None = None,
 ) -> Path:
-    root = argument_root or injected_root or default_project_run_store_root()
+    root = argument_root or injected_root or default or default_project_run_store_root()
     return root.expanduser().resolve()
 
 
@@ -477,3 +538,152 @@ def _print_upgrade_analysis(context: object, output: TextIO) -> None:
         print("Regression risks:", file=output)
         for risk in impact.regression_risks:
             print(f"- {risk}", file=output)
+
+
+def _run_research_command(
+    arguments: argparse.Namespace,
+    cwd: Path,
+    store_root: Path,
+    build_service: ResearchServiceBuilder,
+    output: TextIO,
+) -> int:
+    store = FileResearchRunStore(store_root)
+    if arguments.command == "create":
+        request_path = _resolve_path(arguments.request_file, cwd)
+        try:
+            topic = request_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise CliError(
+                f"Could not read research request file: {request_path}"
+            ) from error
+        if not topic.strip():
+            raise CliError("Research request file must not be empty")
+        workspace = (
+            _resolve_path(arguments.workspace, cwd) if arguments.workspace else cwd
+        )
+        if not workspace.is_dir():
+            raise CliError(f"Workspace is not a directory: {workspace}")
+        stored = build_service(workspace, store).create_research_run(topic)
+        _print_research_summary(stored, workspace, output)
+        return 0
+
+    service = build_service(cwd, store)
+    if arguments.command == "status":
+        _print_research_status(
+            service.get_research_run(arguments.research_run_id), output
+        )
+        return 0
+    if arguments.command == "report":
+        report = service.get_research_report(arguments.research_run_id)
+        if arguments.as_json:
+            print(
+                json.dumps(report.model_dump(mode="json"), ensure_ascii=False),
+                file=output,
+            )
+        else:
+            _print_research_report(report, output)
+        return 0
+    if arguments.command == "directions":
+        _print_research_directions(
+            service.get_research_directions(arguments.research_run_id), output
+        )
+        return 0
+    stored = service.select_research_direction(
+        arguments.research_run_id, arguments.direction_id
+    )
+    print(
+        f"Selected direction: {stored.research_run.selected_direction_id}", file=output
+    )
+    print(f"Status: {stored.research_run.status}", file=output)
+    return 0
+
+
+def _build_production_research_service(
+    workspace: Path, store: FileResearchRunStore
+) -> ResearchApplicationService:
+    """Reuse the API composition root with real web retrieval and CLI persistence."""
+    from ai_agent_project.api.app import create_default_research_application_service
+
+    return create_default_research_application_service(workspace, store=store)
+
+
+def _print_research_summary(
+    stored: StoredResearchRun, workspace: Path, output: TextIO
+) -> None:
+    report = stored.research_run.report
+    print(f"Research run: {stored.id}", file=output)
+    print(f"Topic: {stored.research_run.request.topic}", file=output)
+    print(f"Status: {stored.research_run.status}", file=output)
+    print(f"Questions: {len(report.questions)}", file=output)
+    print(f"Sources: {len(report.sources)}", file=output)
+    print(f"Evidence: {len(report.evidence)}", file=output)
+    print(f"Related studies: {len(report.related_studies)}", file=output)
+    print(f"Research gaps: {len(report.gaps)}", file=output)
+    print(f"Directions: {len(report.directions)}", file=output)
+    print(f"Workspace: {workspace}", file=output)
+
+
+def _print_research_status(stored: StoredResearchRun, output: TextIO) -> None:
+    report = stored.research_run.report
+    print(f"Research run: {stored.id}", file=output)
+    print(f"Topic: {stored.research_run.request.topic}", file=output)
+    print(f"Status: {stored.research_run.status}", file=output)
+    print(
+        f"Selected direction: {stored.research_run.selected_direction_id or '-'}",
+        file=output,
+    )
+    for label, values in (
+        ("Questions", report.questions),
+        ("Sources", report.sources),
+        ("Evidence", report.evidence),
+        ("Related studies", report.related_studies),
+        ("Gaps", report.gaps),
+        ("Directions", report.directions),
+    ):
+        print(f"{label}: {len(values)}", file=output)
+
+
+def _print_research_report(report: object, output: TextIO) -> None:
+    from ai_agent_project.agent.research import ResearchDiscoveryReport
+
+    if not isinstance(report, ResearchDiscoveryReport):
+        raise CliError("Stored research report is invalid")
+    print("Preliminary Research", file=output)
+    print(report.preliminary.topic if report.preliminary else "-", file=output)
+    print("Related Work", file=output)
+    for study in report.related_studies:
+        print(f"- {study.id}: {study.title}", file=output)
+    print("Research Landscape", file=output)
+    for stage in () if report.landscape is None else report.landscape.stages:
+        print(f"- {stage.id}: {stage.title}", file=output)
+    print("Research Gaps", file=output)
+    for gap in report.gaps:
+        print(f"- {gap.id}: {gap.description}", file=output)
+    print("Research Directions", file=output)
+    _print_research_directions(report.directions, output)
+
+
+def _print_research_directions(directions: object, output: TextIO) -> None:
+    from ai_agent_project.agent.research import ResearchDirection
+
+    if not isinstance(directions, tuple):
+        raise CliError("Stored research directions are invalid")
+    if not directions:
+        print(
+            "No defensible research directions were identified from the available evidence.",
+            file=output,
+        )
+        return
+    for direction in directions:
+        if not isinstance(direction, ResearchDirection):
+            raise CliError("Stored research directions are invalid")
+        print(f"{direction.id}\nTitle: {direction.title}", file=output)
+        print(f"Research question: {direction.research_question}", file=output)
+        print(f"Target gaps: {', '.join(direction.target_gap_ids)}", file=output)
+        print(f"Novelty: {direction.novelty}", file=output)
+        print(
+            f"Expected contributions: {', '.join(direction.expected_contributions) or '-'}",
+            file=output,
+        )
+        print(f"Feasibility: {direction.feasibility}", file=output)
+        print(f"Risks: {', '.join(direction.risks) or '-'}", file=output)

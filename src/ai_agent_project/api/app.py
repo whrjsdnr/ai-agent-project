@@ -32,6 +32,16 @@ from ai_agent_project.agent.project_application import (
 )
 from ai_agent_project.agent.project_execution import ProjectExecutionService
 from ai_agent_project.agent.project_runner import ProjectRunner, UpgradeProjectRunner
+from ai_agent_project.agent.research_application import (
+    InMemoryResearchRunStore,
+    InvalidResearchStateError,
+    ResearchApplicationService,
+    ResearchDirectionNotFoundError,
+    ResearchRunNotFoundError,
+    StoredResearchRun,
+)
+from ai_agent_project.agent.research_discovery import ResearchDiscoveryService
+from ai_agent_project.agent.research_file_store import FileResearchRunStore
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
@@ -47,10 +57,22 @@ from ai_agent_project.llm.providers.openai_project_plan_reviser import (
     OpenAIProjectPlanReviser,
 )
 from ai_agent_project.llm.providers.openai_project_planner import OpenAIProjectPlanner
+from ai_agent_project.llm.providers.openai_research_discovery_synthesizer import (
+    OpenAIResearchDiscoverySynthesizer,
+)
+from ai_agent_project.llm.providers.openai_research_evidence_extractor import (
+    OpenAIResearchEvidenceExtractor,
+)
+from ai_agent_project.llm.providers.openai_research_question_planner import (
+    OpenAIResearchQuestionPlanner,
+)
 from ai_agent_project.llm.providers.openai_specification import (
     OpenAISpecificationParser,
 )
 from ai_agent_project.llm.providers.openai_upgrade_analyzer import OpenAIUpgradeAnalyzer
+from ai_agent_project.llm.providers.openai_web_research import (
+    OpenAIWebResearchSourceProvider,
+)
 from ai_agent_project.tools.calculator import CalculatorTool
 from ai_agent_project.tools.file import FileTool
 from ai_agent_project.tools.registry import ToolRegistry
@@ -160,6 +182,22 @@ class CreateUpgradeProjectRequest(BaseModel):
         return value
 
 
+class CreateResearchRunRequest(BaseModel):
+    topic: str
+    user_context: str | None = None
+
+    @field_validator("topic")
+    @classmethod
+    def reject_blank_topic(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("topic must not be blank")
+        return value
+
+
+class SelectResearchDirectionRequest(BaseModel):
+    direction_id: str = Field(min_length=1)
+
+
 def _default_workspace_root() -> Path:
     """Return the project root containing the source tree."""
     return Path(__file__).resolve().parents[3]
@@ -235,12 +273,32 @@ def create_default_project_application_service(
     )
 
 
+def create_default_research_application_service(
+    workspace_root: Path | None = None,
+    *,
+    store: InMemoryResearchRunStore | FileResearchRunStore | None = None,
+) -> ResearchApplicationService:
+    """Compose real OpenAI planning, retrieval, and synthesis without fallback."""
+    resolved_workspace_root = workspace_root or _default_workspace_root()
+    discovery = ResearchDiscoveryService(
+        OpenAIResearchQuestionPlanner(),
+        OpenAIWebResearchSourceProvider(),
+        OpenAIResearchEvidenceExtractor(),
+        OpenAIResearchDiscoverySynthesizer(),
+        FilesystemWorkspaceInspector(resolved_workspace_root),
+    )
+    return ResearchApplicationService(
+        discovery, store if store is not None else InMemoryResearchRunStore()
+    )
+
+
 def create_app(
     agent_service: AgentService | None = None,
     workspace_root: Path | None = None,
     coding_agent_service: CodingAgentService | None = None,
     acceptance_validator: AcceptanceValidator | None = None,
     project_application_service: ProjectApplicationService | None = None,
+    research_application_service: ResearchApplicationService | None = None,
 ) -> FastAPI:
     """Create the FastAPI app with injectable agent and default workspace root."""
     if agent_service is None:
@@ -256,16 +314,91 @@ def create_app(
             workspace_root,
             agent_service=agent_service,
         )
+    if research_application_service is None:
+        research_application_service = create_default_research_application_service(
+            workspace_root
+        )
 
     app = FastAPI(title="AI Agent Project")
     app.state.agent_service = agent_service
     app.state.coding_agent_service = coding_agent_service
     app.state.project_application_service = project_application_service
+    app.state.research_application_service = research_application_service
 
     @app.get("/health")
     def health() -> dict[str, str]:
         """Return a lightweight service health response."""
         return {"status": "ok"}
+
+    def require_research_service() -> ResearchApplicationService:
+        if research_application_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Research discovery source retrieval is not configured.",
+            )
+        return research_application_service
+
+    @app.post(
+        "/v1/research-runs",
+        response_model=StoredResearchRun,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_research_run(request: CreateResearchRunRequest) -> StoredResearchRun:
+        try:
+            return require_research_service().create_research_run(
+                request.topic, user_context=request.user_context
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=409, detail="Research discovery failed."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}", response_model=StoredResearchRun)
+    def get_research_run(research_run_id: str) -> StoredResearchRun:
+        try:
+            return require_research_service().get_research_run(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/report")
+    def get_research_report(research_run_id: str):
+        try:
+            return require_research_service().get_research_report(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/directions")
+    def get_research_directions(research_run_id: str):
+        try:
+            return require_research_service().get_research_directions(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+
+    @app.post(
+        "/v1/research-runs/{research_run_id}/direction",
+        response_model=StoredResearchRun,
+    )
+    def select_research_direction(
+        research_run_id: str, request: SelectResearchDirectionRequest
+    ) -> StoredResearchRun:
+        try:
+            return require_research_service().select_research_direction(
+                research_run_id, request.direction_id
+            )
+        except (ResearchRunNotFoundError, ResearchDirectionNotFoundError) as error:
+            raise HTTPException(
+                status_code=404, detail="Research run or direction not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research lifecycle conflict."
+            ) from error
 
     @app.post("/v1/agent-runs", response_model=AgentRunResponse)
     def run_agent(request: AgentRunRequest) -> AgentRunResponse:
