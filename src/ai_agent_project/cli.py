@@ -18,6 +18,16 @@ from ai_agent_project.agent.project_file_store import (
     ProjectRunStorageError,
     default_project_run_store_root,
 )
+from ai_agent_project.agent.project_session_application import (
+    ProjectSessionError,
+    ProjectSessionService,
+)
+from ai_agent_project.agent.project_session_file_store import (
+    FileProjectStore,
+    ProjectSessionStorageError,
+    default_project_store_root,
+)
+from ai_agent_project.agent.research import WorkMode
 from ai_agent_project.agent.research_application import (
     ResearchApplicationService,
     ResearchRunError,
@@ -28,6 +38,7 @@ from ai_agent_project.agent.research_file_store import (
     ResearchRunStorageError,
     default_research_run_store_root,
 )
+from ai_agent_project.agent.upgrade import ProjectMode
 
 
 class CliError(Exception):
@@ -38,6 +49,7 @@ ProjectServiceBuilder = Callable[[Path, FileProjectRunStore], ProjectApplication
 ResearchServiceBuilder = Callable[
     [Path, FileResearchRunStore], ResearchApplicationService
 ]
+ProjectSessionServiceBuilder = Callable[[FileProjectStore], ProjectSessionService]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -52,6 +64,7 @@ def run_cli(
     store_root: Path | None = None,
     service_builder: ProjectServiceBuilder | None = None,
     research_service_builder: ResearchServiceBuilder | None = None,
+    project_session_service_builder: ProjectSessionServiceBuilder | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -61,14 +74,19 @@ def run_cli(
     parser = _build_parser()
     arguments = parser.parse_args(list(argv))
     current_directory = (cwd or Path.cwd()).resolve()
+    default_store_root = (
+        default_research_run_store_root()
+        if arguments.top_level == "research"
+        else (
+            default_project_store_root()
+            if arguments.top_level == "project-session"
+            else default_project_run_store_root()
+        )
+    )
     resolved_store_root = _resolve_store_root(
         getattr(arguments, "store_root", None),
         store_root,
-        default=(
-            default_research_run_store_root()
-            if arguments.top_level == "research"
-            else default_project_run_store_root()
-        ),
+        default=default_store_root,
     )
     build_service = service_builder or _build_production_service
 
@@ -79,6 +97,14 @@ def run_cli(
                 current_directory,
                 resolved_store_root,
                 research_service_builder or _build_production_research_service,
+                output,
+            )
+        if arguments.top_level == "project-session":
+            return _run_project_session_command(
+                arguments,
+                resolved_store_root,
+                project_session_service_builder
+                or _build_production_project_session_service,
                 output,
             )
         if arguments.command == "create":
@@ -101,6 +127,8 @@ def run_cli(
         ProjectRunStorageError,
         ResearchRunError,
         ResearchRunStorageError,
+        ProjectSessionError,
+        ProjectSessionStorageError,
         OSError,
         UnicodeError,
         ValueError,
@@ -176,6 +204,38 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     research.add_argument("--store-root", type=Path)
     research_commands = research.add_subparsers(dest="command", required=True)
+
+    session = top_level.add_parser(
+        "project-session", help="Propose and confirm shallow project orchestration"
+    )
+    session.add_argument("--store-root", type=Path)
+    session_commands = session.add_subparsers(dest="command", required=True)
+    session_create = session_commands.add_parser("create", help="Propose project modes")
+    session_create.add_argument("request")
+    session_create.add_argument("--title")
+    for name, help_text in (
+        ("status", "Show a project session"),
+        ("resume", "Show the next required project-session action"),
+        ("pending-action", "Show required explicit human action(s)"),
+        ("complete", "Complete an active project session"),
+    ):
+        command = session_commands.add_parser(name, help=help_text)
+        command.add_argument("project_id")
+    confirm = session_commands.add_parser("confirm-mode", help="Confirm project modes")
+    confirm.add_argument("project_id")
+    confirm.add_argument(
+        "--work-mode", required=True, choices=[item.value for item in WorkMode]
+    )
+    confirm.add_argument(
+        "--project-mode", required=True, choices=[item.value for item in ProjectMode]
+    )
+    for name, id_name, help_text in (
+        ("bind-developer", "developer_run_id", "Bind a Developer run ID"),
+        ("bind-research", "research_run_id", "Bind a Researcher run ID"),
+    ):
+        command = session_commands.add_parser(name, help=help_text)
+        command.add_argument("project_id")
+        command.add_argument(id_name)
     research_create = research_commands.add_parser(
         "create", help="Create a research discovery run"
     )
@@ -289,6 +349,62 @@ def _create_upgrade(
         request_text, project_title=arguments.title
     )
     _print_project_summary(stored, workspace, output)
+    return 0
+
+
+def _run_project_session_command(
+    arguments: argparse.Namespace,
+    store_root: Path,
+    build_service: ProjectSessionServiceBuilder,
+    output: TextIO,
+) -> int:
+    store = FileProjectStore(store_root)
+    service = build_service(store)
+    if arguments.command == "create":
+        stored = service.create_project_request(
+            arguments.request, title=arguments.title
+        )
+        _print_project_session(stored.project, output)
+        return 0
+    if arguments.command == "status":
+        _print_project_session(
+            service.get_project(arguments.project_id).project, output
+        )
+        return 0
+    if arguments.command == "confirm-mode":
+        stored = service.confirm_project_mode(
+            arguments.project_id,
+            WorkMode(arguments.work_mode),
+            ProjectMode(arguments.project_mode),
+        )
+        _print_project_session(stored.project, output)
+        return 0
+    if arguments.command == "bind-developer":
+        stored = service.bind_developer_run(
+            arguments.project_id, arguments.developer_run_id
+        )
+        _print_project_session(stored.project, output)
+        return 0
+    if arguments.command == "bind-research":
+        stored = service.bind_research_run(
+            arguments.project_id, arguments.research_run_id
+        )
+        _print_project_session(stored.project, output)
+        return 0
+    if arguments.command == "complete":
+        _print_project_session(
+            service.complete_project(arguments.project_id).project, output
+        )
+        return 0
+    if arguments.command == "pending-action":
+        project = service.get_project(arguments.project_id).project
+        _print_project_session(project, output)
+        _print_pending_actions(
+            service.get_pending_actions(arguments.project_id), output
+        )
+        return 0
+    resume = service.resume_project(arguments.project_id)
+    _print_resume(resume, output)
     return 0
 
 
@@ -437,6 +553,56 @@ def _print_project_status(
                 f"/{record.checkpoint.decision or '-'}"
             )
         print(f"[{marker}] {phase.id} {phase.title} ({detail})", file=output)
+
+
+def _print_project_session(project: object, output: TextIO) -> None:
+    from ai_agent_project.agent.project_session import ProjectSession
+
+    if not isinstance(project, ProjectSession):
+        raise CliError("Stored project session is invalid")
+    print(f"Project ID: {project.project_id}", file=output)
+    print(f"Status: {project.status}", file=output)
+    print(
+        "Mode proposal: "
+        f"{project.mode_proposal.proposed_work_mode} + "
+        f"{project.mode_proposal.proposed_project_mode}",
+        file=output,
+    )
+    print(f"Work mode: {project.work_mode or '-'}", file=output)
+    print(f"Project mode: {project.project_mode or '-'}", file=output)
+    print(f"Developer run: {project.developer_run_id or '-'}", file=output)
+    print(f"Research run: {project.research_run_id or '-'}", file=output)
+
+
+def _print_pending_actions(actions: tuple[object, ...], output: TextIO) -> None:
+    from ai_agent_project.agent.project_session import ProjectPendingAction
+
+    print("Pending action(s):", file=output)
+    if not actions:
+        print("- none", file=output)
+        return
+    for action in actions:
+        if not isinstance(action, ProjectPendingAction):
+            raise CliError("Project pending action is invalid")
+        print(f"- {action.action_type}: {action.message}", file=output)
+        print(
+            f"  Suggested explicit next command/action: {action.suggested_action}",
+            file=output,
+        )
+
+
+def _print_resume(resume: object, output: TextIO) -> None:
+    from ai_agent_project.agent.project_session_application import ProjectResumeView
+
+    if not isinstance(resume, ProjectResumeView):
+        raise CliError("Project resume view is invalid")
+    print(f"Project ID: {resume.project_id}", file=output)
+    print(f"Status: {resume.status}", file=output)
+    print(f"Work mode: {resume.work_mode or '-'}", file=output)
+    print(f"Project mode: {resume.project_mode or '-'}", file=output)
+    print(f"Developer run: {resume.developer_run_id or '-'}", file=output)
+    print(f"Research run: {resume.research_run_id or '-'}", file=output)
+    _print_pending_actions(resume.pending_actions, output)
 
 
 def _print_execution_summary(
@@ -747,6 +913,18 @@ def _build_production_research_service(
     from ai_agent_project.api.app import create_default_research_application_service
 
     return create_default_research_application_service(workspace, store=store)
+
+
+def _build_production_project_session_service(
+    store: FileProjectStore,
+) -> ProjectSessionService:
+    from ai_agent_project.api.app import create_default_project_session_service
+
+    return create_default_project_session_service(
+        store=store,
+        developer_run_reader=FileProjectRunStore(default_project_run_store_root()),
+        research_run_reader=FileResearchRunStore(default_research_run_store_root()),
+    )
 
 
 def _print_research_summary(

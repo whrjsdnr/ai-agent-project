@@ -32,6 +32,18 @@ from ai_agent_project.agent.project_application import (
 )
 from ai_agent_project.agent.project_execution import ProjectExecutionService
 from ai_agent_project.agent.project_runner import ProjectRunner, UpgradeProjectRunner
+from ai_agent_project.agent.project_session_application import (
+    DeveloperRunReader,
+    InMemoryProjectSessionStore,
+    ProjectSessionError,
+    ProjectSessionNotFoundError,
+    ProjectSessionService,
+    ProjectSessionStateError,
+    ProjectSessionStore,
+    ResearchRunReader,
+    StoredProjectSession,
+)
+from ai_agent_project.agent.research import WorkMode
 from ai_agent_project.agent.research_application import (
     InMemoryResearchRunStore,
     InvalidResearchStateError,
@@ -47,7 +59,7 @@ from ai_agent_project.agent.research_file_store import FileResearchRunStore
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
-from ai_agent_project.agent.upgrade import UpgradeContext
+from ai_agent_project.agent.upgrade import ProjectMode, UpgradeContext
 from ai_agent_project.agent.workspace import FilesystemWorkspaceInspector
 from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
 from ai_agent_project.llm.providers.openai import OpenAIClient
@@ -55,6 +67,9 @@ from ai_agent_project.llm.providers.openai_codebase_analyzer import (
     OpenAICodebaseAnalyzer,
 )
 from ai_agent_project.llm.providers.openai_planner import OpenAIImplementationPlanner
+from ai_agent_project.llm.providers.openai_project_mode_proposer import (
+    OpenAIProjectModeProposer,
+)
 from ai_agent_project.llm.providers.openai_project_plan_reviser import (
     OpenAIProjectPlanReviser,
 )
@@ -165,6 +180,34 @@ class CreateProjectRunRequest(BaseModel):
     def reject_blank_source_text(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("source_text must not be blank")
+        return value
+
+
+class CreateProjectSessionRequest(BaseModel):
+    original_request: str
+    title: str | None = None
+
+    @field_validator("original_request")
+    @classmethod
+    def reject_blank_request(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("original_request must not be blank")
+        return value
+
+
+class ConfirmProjectModeRequest(BaseModel):
+    work_mode: WorkMode
+    project_mode: ProjectMode
+
+
+class BindProjectRunRequest(BaseModel):
+    run_id: str
+
+    @field_validator("run_id")
+    @classmethod
+    def reject_blank_run_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("run_id must not be blank")
         return value
 
 
@@ -302,6 +345,21 @@ def create_default_project_application_service(
     )
 
 
+def create_default_project_session_service(
+    *,
+    store: ProjectSessionStore | None = None,
+    developer_run_reader: DeveloperRunReader | None = None,
+    research_run_reader: ResearchRunReader | None = None,
+) -> ProjectSessionService:
+    """Compose proposal-only project-session orchestration."""
+    return ProjectSessionService(
+        store if store is not None else InMemoryProjectSessionStore(),
+        OpenAIProjectModeProposer(),
+        developer_run_reader,
+        research_run_reader,
+    )
+
+
 def create_default_research_application_service(
     workspace_root: Path | None = None,
     *,
@@ -334,6 +392,7 @@ def create_app(
     coding_agent_service: CodingAgentService | None = None,
     acceptance_validator: AcceptanceValidator | None = None,
     project_application_service: ProjectApplicationService | None = None,
+    project_session_service: ProjectSessionService | None = None,
     research_application_service: ResearchApplicationService | None = None,
 ) -> FastAPI:
     """Create the FastAPI app with injectable agent and default workspace root."""
@@ -346,19 +405,32 @@ def create_app(
             acceptance_validator=acceptance_validator,
         )
     if project_application_service is None:
+        project_run_store = InMemoryProjectRunStore()
         project_application_service = create_default_project_application_service(
             workspace_root,
             agent_service=agent_service,
+            store=project_run_store,
         )
+    else:
+        project_run_store = None
     if research_application_service is None:
+        research_run_store = InMemoryResearchRunStore()
         research_application_service = create_default_research_application_service(
-            workspace_root
+            workspace_root, store=research_run_store
+        )
+    else:
+        research_run_store = None
+    if project_session_service is None:
+        project_session_service = create_default_project_session_service(
+            developer_run_reader=project_run_store,
+            research_run_reader=research_run_store,
         )
 
     app = FastAPI(title="AI Agent Project")
     app.state.agent_service = agent_service
     app.state.coding_agent_service = coding_agent_service
     app.state.project_application_service = project_application_service
+    app.state.project_session_service = project_session_service
     app.state.research_application_service = research_application_service
 
     @app.get("/health")
@@ -373,6 +445,107 @@ def create_app(
                 detail="Research discovery source retrieval is not configured.",
             )
         return research_application_service
+
+    def require_project_session_service() -> ProjectSessionService:
+        assert project_session_service is not None
+        return project_session_service
+
+    @app.post("/v1/projects", response_model=StoredProjectSession, status_code=201)
+    def create_project_session(
+        request: CreateProjectSessionRequest,
+    ) -> StoredProjectSession:
+        try:
+            return require_project_session_service().create_project_request(
+                request.original_request, title=request.title
+            )
+        except ProjectSessionError as error:
+            raise HTTPException(
+                status_code=503, detail="Project mode proposal unavailable."
+            ) from error
+
+    @app.get("/v1/projects/{project_id}", response_model=StoredProjectSession)
+    def get_project_session(project_id: str) -> StoredProjectSession:
+        try:
+            return require_project_session_service().get_project(project_id)
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Project not found.") from error
+
+    @app.post(
+        "/v1/projects/{project_id}/confirm-mode", response_model=StoredProjectSession
+    )
+    def confirm_project_mode(
+        project_id: str, request: ConfirmProjectModeRequest
+    ) -> StoredProjectSession:
+        try:
+            return require_project_session_service().confirm_project_mode(
+                project_id, request.work_mode, request.project_mode
+            )
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Project not found.") from error
+        except ProjectSessionStateError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/developer-run", response_model=StoredProjectSession
+    )
+    def bind_project_developer_run(
+        project_id: str, request: BindProjectRunRequest
+    ) -> StoredProjectSession:
+        try:
+            return require_project_session_service().bind_developer_run(
+                project_id, request.run_id
+            )
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Project not found.") from error
+        except ProjectSessionStateError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/research-run", response_model=StoredProjectSession
+    )
+    def bind_project_research_run(
+        project_id: str, request: BindProjectRunRequest
+    ) -> StoredProjectSession:
+        try:
+            return require_project_session_service().bind_research_run(
+                project_id, request.run_id
+            )
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Project not found.") from error
+        except ProjectSessionStateError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/v1/projects/{project_id}/complete", response_model=StoredProjectSession)
+    def complete_project_session(project_id: str) -> StoredProjectSession:
+        try:
+            return require_project_session_service().complete_project(project_id)
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Project not found.") from error
+        except ProjectSessionStateError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get("/v1/projects/{project_id}/pending-action")
+    def get_project_pending_action(project_id: str):
+        try:
+            return {
+                "project_id": project_id,
+                "pending_actions": require_project_session_service().get_pending_actions(
+                    project_id
+                ),
+            }
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Project not found.") from error
+        except ProjectSessionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get("/v1/projects/{project_id}/resume")
+    def resume_project_session(project_id: str):
+        try:
+            return require_project_session_service().resume_project(project_id)
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Project not found.") from error
+        except ProjectSessionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.post(
         "/v1/research-runs",
