@@ -7,12 +7,14 @@ from ai_agent_project.agent.research import (
     ResearchDiscoveryReport,
     ResearchImplementationPackage,
     ResearchImplementationPlan,
+    ResearchPaperMaterialsPayload,
     ResearchPlan,
     ResearchQuestion,
     ResearchRequest,
     ResearchResultAnalysis,
     ResearchResultAnalysisPayload,
     ResearchResultSubmission,
+    ResearchResultSynthesis,
     ResearchSynthesisPayload,
 )
 from ai_agent_project.agent.workspace import WorkspaceSnapshot
@@ -85,3 +87,18 @@ class ResearchResultSynthesizer(Protocol):
         submission: ResearchResultSubmission,
         analysis: ResearchResultAnalysis,
     ) -> ResearchSynthesisPayload: ...
+
+
+class ResearchPaperMaterialsGenerator(Protocol):
+    """Generate structured paper-support material, never manuscript prose."""
+
+    def generate(
+        self,
+        direction: ResearchDirection,
+        report: ResearchDiscoveryReport,
+        approved_plan: ResearchPlan,
+        implementation_plan: ResearchImplementationPlan,
+        submission: ResearchResultSubmission,
+        analysis: ResearchResultAnalysis,
+        synthesis: ResearchResultSynthesis,
+    ) -> ResearchPaperMaterialsPayload: ...

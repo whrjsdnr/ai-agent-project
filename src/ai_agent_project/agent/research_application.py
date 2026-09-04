@@ -10,6 +10,8 @@ from ai_agent_project.agent.research import (
     ResearchImplementationPackage,
     ResearchImplementationPlan,
     ResearchMetricAssessment,
+    ResearchPaperMaterials,
+    ResearchPaperMetricResult,
     ResearchPlanRevision,
     ResearchPlanRevisionState,
     ResearchRequest,
@@ -23,6 +25,7 @@ from ai_agent_project.agent.research_discovery import ResearchDiscoveryService
 from ai_agent_project.agent.research_planning import (
     ResearchImplementationGenerator,
     ResearchImplementationPlanner,
+    ResearchPaperMaterialsGenerator,
     ResearchPlanGenerator,
     ResearchResultAnalyzer,
     ResearchResultSynthesizer,
@@ -106,6 +109,7 @@ class ResearchApplicationService:
         implementation_generator: ResearchImplementationGenerator | None = None,
         result_analyzer: ResearchResultAnalyzer | None = None,
         result_synthesizer: ResearchResultSynthesizer | None = None,
+        paper_materials_generator: ResearchPaperMaterialsGenerator | None = None,
     ) -> None:
         self._discovery_service = discovery_service
         self._store = store
@@ -114,6 +118,7 @@ class ResearchApplicationService:
         self._implementation_generator = implementation_generator
         self._result_analyzer = result_analyzer
         self._result_synthesizer = result_synthesizer
+        self._paper_materials_generator = paper_materials_generator
 
     def create_research_run(
         self, topic: str, *, user_context: str | None = None
@@ -461,6 +466,69 @@ class ResearchApplicationService:
             raise InvalidResearchStateError("Research synthesis has not been generated")
         return synthesis
 
+    def generate_paper_materials(self, research_run_id: str) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if run.status is not ResearchStatus.RESEARCH_SYNTHESIS_READY:
+            raise InvalidResearchStateError(
+                "Paper materials require completed research synthesis"
+            )
+        if (
+            self._paper_materials_generator is None
+            or run.plan_revision_state is None
+            or run.implementation_plan is None
+            or run.result_submission is None
+            or run.result_analysis is None
+            or run.result_synthesis is None
+        ):
+            raise ResearchRunError("Research paper materials are not configured")
+        try:
+            payload = self._paper_materials_generator.generate(
+                self._selected_direction(run),
+                run.report,
+                run.plan_revision_state.active_plan,
+                run.implementation_plan,
+                run.result_submission,
+                run.result_analysis,
+                run.result_synthesis,
+            )
+        except Exception as error:
+            raise ResearchRunError(
+                "Research paper materials generation failed"
+            ) from error
+        unknown_key_metrics = sorted(
+            set(payload.key_metric_ids)
+            - {item.id for item in run.plan_revision_state.active_plan.metrics}
+        )
+        if unknown_key_metrics:
+            raise ResearchRunError(
+                "Research paper materials reference unknown metric IDs: "
+                + ", ".join(unknown_key_metrics)
+            )
+        materials = ResearchPaperMaterials(
+            **payload.model_dump(),
+            selected_direction_id=run.selected_direction_id,
+            approved_plan_version=run.plan_revision_state.active_version,
+            implementation_plan_version=run.implementation_plan.approved_plan_version,
+            key_results=self._paper_metric_results(run, payload.key_metric_ids),
+        )
+        self._validate_paper_materials(run, materials)
+        updated = run.model_copy(
+            update={
+                "status": ResearchStatus.PAPER_MATERIALS_READY,
+                "paper_materials": materials,
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def get_paper_materials(self, research_run_id: str) -> ResearchPaperMaterials:
+        materials = self._require_run(research_run_id).paper_materials
+        if materials is None:
+            raise InvalidResearchStateError(
+                "Research paper materials have not been generated"
+            )
+        return materials
+
     @staticmethod
     def _result_guide(research_run_id: str, run: ResearchRun) -> str:
         version = (
@@ -735,6 +803,162 @@ class ResearchApplicationService:
                 "Research synthesis references unknown evidence: "
                 + ", ".join(unknown_evidence)
             )
+
+    @staticmethod
+    def _paper_metric_results(
+        run: ResearchRun, metric_ids: tuple[str, ...]
+    ) -> tuple[ResearchPaperMetricResult, ...]:
+        assert run.result_submission is not None
+        observations = {
+            item.metric_id: item for item in run.result_submission.metric_observations
+        }
+        missing_observations = sorted(set(metric_ids) - set(observations))
+        if missing_observations:
+            raise ResearchRunError(
+                "Paper materials key results require submitted observations: "
+                + ", ".join(missing_observations)
+            )
+        return tuple(
+            ResearchPaperMetricResult(
+                metric_id=metric_id,
+                value=observations[metric_id].value,
+                unit=observations[metric_id].unit,
+                observation_status=observations[metric_id].status,
+                notes=observations[metric_id].notes,
+            )
+            for metric_id in metric_ids
+        )
+
+    @staticmethod
+    def _validate_paper_materials(
+        run: ResearchRun, materials: ResearchPaperMaterials
+    ) -> None:
+        assert run.plan_revision_state is not None
+        assert run.implementation_plan is not None
+        assert run.result_analysis is not None
+        assert run.result_synthesis is not None
+        objective_ids = {
+            item.id for item in run.plan_revision_state.active_plan.objectives
+        }
+        task_ids = {item.task_id for item in run.implementation_plan.tasks}
+        metric_ids = {item.id for item in run.plan_revision_state.active_plan.metrics}
+        source_ids = {item.id for item in run.report.sources}
+        finding_ids = {item.finding_id for item in run.result_analysis.findings}
+        synthesis_claim_ids = {
+            item.claim_id
+            for item in (
+                *run.result_synthesis.major_findings,
+                *run.result_synthesis.inconclusive_findings,
+                *run.result_synthesis.negative_findings,
+                *run.result_synthesis.research_contributions,
+            )
+        }
+        synthesis_claims = {
+            item.claim_id: item
+            for item in (
+                *run.result_synthesis.major_findings,
+                *run.result_synthesis.inconclusive_findings,
+                *run.result_synthesis.negative_findings,
+                *run.result_synthesis.research_contributions,
+            )
+        }
+        evidence_refs = {
+            *(f"task:{item.task_id}" for item in run.result_submission.task_results),
+            *(
+                f"metric:{item.metric_id}"
+                for item in run.result_submission.metric_observations
+            ),
+            *(f"finding:{item.finding_id}" for item in run.result_analysis.findings),
+        }
+        if not set(materials.citation_source_ids) <= source_ids:
+            raise ResearchRunError(
+                "Research paper materials reference unknown source IDs: "
+                + ", ".join(sorted(set(materials.citation_source_ids) - source_ids))
+            )
+        if not set(materials.key_metric_ids) <= metric_ids:
+            raise ResearchRunError(
+                "Research paper materials reference unknown metric IDs: "
+                + ", ".join(sorted(set(materials.key_metric_ids) - metric_ids))
+            )
+        claims = (
+            *materials.contribution_candidates,
+            *materials.usable_claims,
+            *materials.prohibited_claims,
+        )
+        for claim in claims:
+            if not set(claim.synthesis_claim_ids) <= synthesis_claim_ids:
+                raise ResearchRunError(
+                    "Research paper materials reference unknown synthesis claim IDs: "
+                    + ", ".join(
+                        sorted(set(claim.synthesis_claim_ids) - synthesis_claim_ids)
+                    )
+                )
+            if not set(claim.objective_ids) <= objective_ids:
+                raise ResearchRunError(
+                    "Research paper materials reference unknown objective IDs: "
+                    + ", ".join(sorted(set(claim.objective_ids) - objective_ids))
+                )
+            if not set(claim.task_ids) <= task_ids:
+                raise ResearchRunError(
+                    "Research paper materials reference unknown task IDs: "
+                    + ", ".join(sorted(set(claim.task_ids) - task_ids))
+                )
+            if not set(claim.metric_ids) <= metric_ids:
+                raise ResearchRunError(
+                    "Research paper materials reference unknown metric IDs: "
+                    + ", ".join(sorted(set(claim.metric_ids) - metric_ids))
+                )
+            if not set(claim.analysis_finding_ids) <= finding_ids:
+                raise ResearchRunError(
+                    "Research paper materials reference unknown analysis finding IDs: "
+                    + ", ".join(sorted(set(claim.analysis_finding_ids) - finding_ids))
+                )
+            if not set(claim.evidence_refs) <= evidence_refs:
+                raise ResearchRunError(
+                    "Research paper materials reference unknown evidence refs: "
+                    + ", ".join(sorted(set(claim.evidence_refs) - evidence_refs))
+                )
+            if claim.synthesis_claim_ids:
+                allowed_transitions = {
+                    "supported": {
+                        "supported",
+                        "partially_supported",
+                        "inconclusive",
+                        "unsupported",
+                    },
+                    "partially_supported": {
+                        "partially_supported",
+                        "inconclusive",
+                        "unsupported",
+                    },
+                    "inconclusive": {"inconclusive", "unsupported"},
+                    "unsupported": {"unsupported"},
+                }
+                if any(
+                    claim.support_status.value
+                    not in allowed_transitions[
+                        synthesis_claims[item].support_status.value
+                    ]
+                    for item in claim.synthesis_claim_ids
+                ):
+                    raise ResearchRunError(
+                        "Research paper materials cannot strengthen synthesis support"
+                    )
+        paper_claim_ids = {claim.claim_id for claim in claims}
+        for suggestion in (*materials.table_suggestions, *materials.figure_suggestions):
+            if not set(suggestion.paper_claim_ids) <= paper_claim_ids:
+                raise ResearchRunError(
+                    "Paper suggestion references unknown paper claim"
+                )
+            if not set(suggestion.metric_ids) <= metric_ids:
+                raise ResearchRunError("Paper suggestion references unknown metric")
+        for section in materials.section_materials:
+            if not set(section.included_claim_ids) <= paper_claim_ids:
+                raise ResearchRunError("Paper section references unknown paper claim")
+            if not set(section.included_source_ids) <= source_ids:
+                raise ResearchRunError("Paper section references unknown source")
+            if not set(section.included_metric_ids) <= metric_ids:
+                raise ResearchRunError("Paper section references unknown metric")
 
     @staticmethod
     def _selected_direction(run: ResearchRun):

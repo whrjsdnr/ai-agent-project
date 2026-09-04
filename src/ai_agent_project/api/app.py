@@ -69,6 +69,9 @@ from ai_agent_project.llm.providers.openai_research_implementation import (
     OpenAIResearchImplementationGenerator,
     OpenAIResearchImplementationPlanner,
 )
+from ai_agent_project.llm.providers.openai_research_paper_materials import (
+    OpenAIResearchPaperMaterialsGenerator,
+)
 from ai_agent_project.llm.providers.openai_research_plan_generator import (
     OpenAIResearchPlanGenerator,
 )
@@ -321,6 +324,7 @@ def create_default_research_application_service(
         OpenAIResearchImplementationGenerator(),
         OpenAIResearchResultAnalyzer(),
         OpenAIResearchResultSynthesizer(),
+        OpenAIResearchPaperMaterialsGenerator(),
     )
 
 
@@ -674,6 +678,36 @@ def create_app(
         except InvalidResearchStateError as error:
             raise HTTPException(
                 status_code=409, detail="Research synthesis unavailable."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/paper-materials")
+    def generate_research_paper_materials(research_run_id: str) -> StoredResearchRun:
+        try:
+            return require_research_service().generate_paper_materials(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research paper materials lifecycle conflict."
+            ) from error
+        except (ResearchRunError, ValueError) as error:
+            raise HTTPException(
+                status_code=503, detail="Research paper materials unavailable."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/paper-materials")
+    def get_research_paper_materials(research_run_id: str):
+        try:
+            return require_research_service().get_paper_materials(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research paper materials unavailable."
             ) from error
 
     @app.post("/v1/agent-runs", response_model=AgentRunResponse)

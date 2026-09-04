@@ -66,6 +66,9 @@ def _analyzed_service(
                     value=0.9123,
                     status=ResearchMeasurementStatus.MEASURED,
                 ),
+                ResearchMetricObservation(
+                    metric_id="M2", status=ResearchMeasurementStatus.NOT_MEASURED
+                ),
             ),
             task_results=(
                 ResearchTaskResult(
@@ -73,6 +76,10 @@ def _analyzed_service(
                     objective_ids=("O",),
                     metric_ids=("M",),
                     execution_status=ResearchTaskExecutionStatus.EXECUTED,
+                ),
+                ResearchTaskResult(
+                    task_id="T2",
+                    execution_status=ResearchTaskExecutionStatus.NOT_EXECUTED,
                 ),
             ),
         ),

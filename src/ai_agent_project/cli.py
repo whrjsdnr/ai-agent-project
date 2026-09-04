@@ -211,6 +211,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ("show-analysis", "Show persisted research result analysis"),
         ("synthesize", "Generate evidence-grounded research synthesis"),
         ("show-synthesis", "Show persisted research result synthesis"),
+        ("paper-materials", "Generate structured research paper materials"),
+        ("show-paper-materials", "Show persisted research paper materials"),
     ):
         command = research_commands.add_parser(name, help=help_text)
         command.add_argument("research_run_id")
@@ -718,6 +720,16 @@ def _run_research_command(
             service.get_synthesis(arguments.research_run_id), output
         )
         return 0
+    if arguments.command == "paper-materials":
+        _print_research_paper_materials(
+            service.generate_paper_materials(arguments.research_run_id), output
+        )
+        return 0
+    if arguments.command == "show-paper-materials":
+        _print_research_paper_materials_value(
+            service.get_paper_materials(arguments.research_run_id), output
+        )
+        return 0
     stored = service.select_research_direction(
         arguments.research_run_id, arguments.direction_id
     )
@@ -919,3 +931,31 @@ def _print_research_synthesis_value(synthesis: object, output: TextIO) -> None:
     print("Missing evidence:", file=output)
     for missing in synthesis.missing_evidence:
         print(f"- {missing}", file=output)
+
+
+def _print_research_paper_materials(stored: StoredResearchRun, output: TextIO) -> None:
+    materials = stored.research_run.paper_materials
+    if materials is None:
+        raise CliError("Research paper materials are missing")
+    print(f"Status: {stored.research_run.status}", file=output)
+    _print_research_paper_materials_value(materials, output)
+
+
+def _print_research_paper_materials_value(materials: object, output: TextIO) -> None:
+    from ai_agent_project.agent.research import ResearchPaperMaterials
+
+    if not isinstance(materials, ResearchPaperMaterials):
+        raise CliError("Stored research paper materials are invalid")
+    print(f"Research problem: {materials.research_problem}", file=output)
+    print("Usable claims:", file=output)
+    for claim in materials.usable_claims:
+        print(f"- {claim.claim_id}: {claim.statement}", file=output)
+    print("Prohibited claims:", file=output)
+    for claim in materials.prohibited_claims:
+        print(f"- {claim.claim_id}: {claim.statement}", file=output)
+    print("Key results:", file=output)
+    for result in materials.key_results:
+        print(
+            f"- {result.metric_id}: {result.value} ({result.observation_status})",
+            file=output,
+        )

@@ -34,7 +34,7 @@ class ResearchStatus(StrEnum):
     RESEARCH_RESULTS_ANALYZED = "research_results_analyzed"
     SYNTHESIS_GENERATION_STARTED = "synthesis_generation_started"
     RESEARCH_SYNTHESIS_READY = "research_synthesis_ready"
-    PAPER_SUPPORT_READY = "paper_support_ready"
+    PAPER_MATERIALS_READY = "paper_materials_ready"
 
 
 class ResearchScope(StrEnum):
@@ -834,6 +834,121 @@ class ResearchResultSynthesis(ResearchSynthesisPayload):
     )
 
 
+class ResearchPaperClaimKind(StrEnum):
+    USABLE = "usable"
+    PROHIBITED = "prohibited"
+    CONTRIBUTION_CANDIDATE = "contribution_candidate"
+
+
+class ResearchPaperClaim(BaseModel):
+    """A paper-material claim, never a manuscript sentence or empirical source."""
+
+    model_config = ConfigDict(frozen=True)
+    claim_id: str = Field(min_length=1)
+    kind: ResearchPaperClaimKind
+    statement: str = Field(min_length=1)
+    support_status: ResearchClaimSupportStatus
+    synthesis_claim_ids: tuple[str, ...] = ()
+    objective_ids: tuple[str, ...] = ()
+    task_ids: tuple[str, ...] = ()
+    metric_ids: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    analysis_finding_ids: tuple[str, ...] = ()
+    limitation_refs: tuple[str, ...] = ()
+
+    _validate_id = field_validator("claim_id")(_nonblank_identifier)
+
+
+class ResearchPaperMetricResult(BaseModel):
+    """Trusted projection of a user-supplied observation for paper materials."""
+
+    model_config = ConfigDict(frozen=True)
+    metric_id: str = Field(min_length=1)
+    value: float | int | str | None = None
+    unit: str | None = None
+    observation_status: ResearchMeasurementStatus
+    notes: str | None = None
+
+    _validate_id = field_validator("metric_id")(_nonblank_identifier)
+
+
+class ResearchPaperPresentationSuggestion(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    suggestion_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    purpose: str = Field(min_length=1)
+    paper_claim_ids: tuple[str, ...] = ()
+    metric_ids: tuple[str, ...] = ()
+
+    _validate_id = field_validator("suggestion_id")(_nonblank_identifier)
+
+
+class ResearchPaperSectionMaterial(BaseModel):
+    """Structured inputs for a future human-authored paper section."""
+
+    model_config = ConfigDict(frozen=True)
+    section_id: str = Field(min_length=1)
+    section: str = Field(min_length=1)
+    included_claim_ids: tuple[str, ...] = ()
+    included_source_ids: tuple[str, ...] = ()
+    included_metric_ids: tuple[str, ...] = ()
+    recommended_items: tuple[str, ...] = ()
+
+    _validate_id = field_validator("section_id")(_nonblank_identifier)
+
+
+class ResearchPaperMaterialsPayload(BaseModel):
+    """Interpretation-only model output; authoritative state is omitted."""
+
+    model_config = ConfigDict(frozen=True)
+    research_problem: str = Field(min_length=1)
+    contribution_candidates: tuple[ResearchPaperClaim, ...] = ()
+    usable_claims: tuple[ResearchPaperClaim, ...] = ()
+    prohibited_claims: tuple[ResearchPaperClaim, ...] = ()
+    related_work_positioning: tuple[str, ...] = ()
+    citation_source_ids: tuple[str, ...] = ()
+    key_metric_ids: tuple[str, ...] = ()
+    table_suggestions: tuple[ResearchPaperPresentationSuggestion, ...] = ()
+    figure_suggestions: tuple[ResearchPaperPresentationSuggestion, ...] = ()
+    section_materials: tuple[ResearchPaperSectionMaterial, ...] = ()
+    limitations: tuple[str, ...] = ()
+    missing_evidence: tuple[str, ...] = ()
+    additional_validation_needed: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "ResearchPaperMaterialsPayload":
+        claims = (
+            *self.contribution_candidates,
+            *self.usable_claims,
+            *self.prohibited_claims,
+        )
+        suggestions = (*self.table_suggestions, *self.figure_suggestions)
+        if len({item.claim_id for item in claims}) != len(claims):
+            raise ValueError("Duplicate research paper claim IDs are not allowed")
+        if len({item.suggestion_id for item in suggestions}) != len(suggestions):
+            raise ValueError(
+                "Duplicate paper presentation suggestion IDs are not allowed"
+            )
+        if len({item.section_id for item in self.section_materials}) != len(
+            self.section_materials
+        ):
+            raise ValueError("Duplicate paper section material IDs are not allowed")
+        return self
+
+
+class ResearchPaperMaterials(ResearchPaperMaterialsPayload):
+    """Persisted structured paper-support material, never a generated manuscript."""
+
+    selected_direction_id: str = Field(min_length=1)
+    approved_plan_version: int = Field(ge=1)
+    implementation_plan_version: int = Field(ge=1)
+    key_results: tuple[ResearchPaperMetricResult, ...] = ()
+
+    _validate_direction_id = field_validator("selected_direction_id")(
+        _nonblank_identifier
+    )
+
+
 class ResearchQuestionSet(BaseModel):
     """Fixed-schema structured-output envelope for question planning."""
 
@@ -967,6 +1082,7 @@ class ResearchRun(BaseModel):
     result_submission: ResearchResultSubmission | None = None
     result_analysis: ResearchResultAnalysis | None = None
     result_synthesis: ResearchResultSynthesis | None = None
+    paper_materials: ResearchPaperMaterials | None = None
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResearchRun":
@@ -989,7 +1105,7 @@ class ResearchRun(BaseModel):
                 ResearchStatus.RESEARCH_RESULTS_ANALYZED,
                 ResearchStatus.SYNTHESIS_GENERATION_STARTED,
                 ResearchStatus.RESEARCH_SYNTHESIS_READY,
-                ResearchStatus.PAPER_SUPPORT_READY,
+                ResearchStatus.PAPER_MATERIALS_READY,
             }
             and self.selected_direction_id is None
         ):
@@ -1009,7 +1125,7 @@ class ResearchRun(BaseModel):
             ResearchStatus.RESEARCH_RESULTS_ANALYZED,
             ResearchStatus.SYNTHESIS_GENERATION_STARTED,
             ResearchStatus.RESEARCH_SYNTHESIS_READY,
-            ResearchStatus.PAPER_SUPPORT_READY,
+            ResearchStatus.PAPER_MATERIALS_READY,
         }:
             raise ValueError("Research plan state requires a planning lifecycle status")
         if self.status is ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL and (
@@ -1101,4 +1217,28 @@ class ResearchRun(BaseModel):
             and self.result_synthesis is None
         ):
             raise ValueError("Research synthesis ready requires a synthesis")
+        if self.paper_materials is not None:
+            if (
+                self.result_synthesis is None
+                or self.plan_revision_state is None
+                or self.implementation_plan is None
+            ):
+                raise ValueError("Paper materials require research synthesis")
+            if self.paper_materials.selected_direction_id != self.selected_direction_id:
+                raise ValueError("Paper materials changed the selected direction")
+            if (
+                self.paper_materials.approved_plan_version
+                != self.plan_revision_state.active_version
+            ):
+                raise ValueError("Paper materials changed approved plan version")
+            if (
+                self.paper_materials.implementation_plan_version
+                != self.implementation_plan.approved_plan_version
+            ):
+                raise ValueError("Paper materials changed implementation plan version")
+        if (
+            self.status is ResearchStatus.PAPER_MATERIALS_READY
+            and self.paper_materials is None
+        ):
+            raise ValueError("Paper-support-ready status requires paper materials")
         return self
