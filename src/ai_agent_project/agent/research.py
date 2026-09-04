@@ -32,6 +32,9 @@ class ResearchStatus(StrEnum):
     AWAITING_USER_RESULTS = "awaiting_user_results"
     RESEARCH_RESULTS_SUBMITTED = "research_results_submitted"
     RESEARCH_RESULTS_ANALYZED = "research_results_analyzed"
+    SYNTHESIS_GENERATION_STARTED = "synthesis_generation_started"
+    RESEARCH_SYNTHESIS_READY = "research_synthesis_ready"
+    PAPER_SUPPORT_READY = "paper_support_ready"
 
 
 class ResearchScope(StrEnum):
@@ -752,6 +755,85 @@ class ResearchResultAnalysis(BaseModel):
     recommended_next_steps: tuple[str, ...] = ()
 
 
+class ResearchClaimSupportStatus(StrEnum):
+    SUPPORTED = "supported"
+    PARTIALLY_SUPPORTED = "partially_supported"
+    INCONCLUSIVE = "inconclusive"
+    UNSUPPORTED = "unsupported"
+
+
+class ResearchObjectiveConclusion(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    objective_id: str = Field(min_length=1)
+    conclusion: str
+    assessment: ResearchClaimSupportStatus
+    evidence_refs: tuple[str, ...] = ()
+
+    _validate_id = field_validator("objective_id")(_nonblank_identifier)
+
+
+class ResearchSynthesisClaim(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    claim_id: str = Field(min_length=1)
+    statement: str
+    support_status: ResearchClaimSupportStatus
+    objective_ids: tuple[str, ...] = ()
+    task_ids: tuple[str, ...] = ()
+    metric_ids: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    analysis_finding_ids: tuple[str, ...] = ()
+
+    _validate_id = field_validator("claim_id")(_nonblank_identifier)
+
+
+class ResearchSynthesisPayload(BaseModel):
+    """Interpretation-only LLM output; authoritative research state is omitted."""
+
+    model_config = ConfigDict(frozen=True)
+    synthesis_summary: str
+    objective_conclusions: tuple[ResearchObjectiveConclusion, ...] = ()
+    major_findings: tuple[ResearchSynthesisClaim, ...] = ()
+    inconclusive_findings: tuple[ResearchSynthesisClaim, ...] = ()
+    negative_findings: tuple[ResearchSynthesisClaim, ...] = ()
+    limitations: tuple[str, ...] = ()
+    missing_evidence: tuple[str, ...] = ()
+    research_contributions: tuple[ResearchSynthesisClaim, ...] = ()
+    threats_to_validity: tuple[str, ...] = ()
+    future_work: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "ResearchSynthesisPayload":
+        conclusion_ids = [item.objective_id for item in self.objective_conclusions]
+        claim_ids = [
+            item.claim_id
+            for item in (
+                *self.major_findings,
+                *self.inconclusive_findings,
+                *self.negative_findings,
+                *self.research_contributions,
+            )
+        ]
+        if len(set(conclusion_ids)) != len(conclusion_ids):
+            raise ValueError(
+                "Duplicate research synthesis objective IDs are not allowed"
+            )
+        if len(set(claim_ids)) != len(claim_ids):
+            raise ValueError("Duplicate research synthesis claim IDs are not allowed")
+        return self
+
+
+class ResearchResultSynthesis(ResearchSynthesisPayload):
+    """Persisted evidence-grounded conclusion derived from analyzed results."""
+
+    selected_direction_id: str = Field(min_length=1)
+    approved_plan_version: int = Field(ge=1)
+    implementation_plan_version: int = Field(ge=1)
+
+    _validate_direction_id = field_validator("selected_direction_id")(
+        _nonblank_identifier
+    )
+
+
 class ResearchQuestionSet(BaseModel):
     """Fixed-schema structured-output envelope for question planning."""
 
@@ -884,6 +966,7 @@ class ResearchRun(BaseModel):
     implementation_package: ResearchImplementationPackage | None = None
     result_submission: ResearchResultSubmission | None = None
     result_analysis: ResearchResultAnalysis | None = None
+    result_synthesis: ResearchResultSynthesis | None = None
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResearchRun":
@@ -904,6 +987,9 @@ class ResearchRun(BaseModel):
                 ResearchStatus.AWAITING_USER_RESULTS,
                 ResearchStatus.RESEARCH_RESULTS_SUBMITTED,
                 ResearchStatus.RESEARCH_RESULTS_ANALYZED,
+                ResearchStatus.SYNTHESIS_GENERATION_STARTED,
+                ResearchStatus.RESEARCH_SYNTHESIS_READY,
+                ResearchStatus.PAPER_SUPPORT_READY,
             }
             and self.selected_direction_id is None
         ):
@@ -921,6 +1007,9 @@ class ResearchRun(BaseModel):
             ResearchStatus.AWAITING_USER_RESULTS,
             ResearchStatus.RESEARCH_RESULTS_SUBMITTED,
             ResearchStatus.RESEARCH_RESULTS_ANALYZED,
+            ResearchStatus.SYNTHESIS_GENERATION_STARTED,
+            ResearchStatus.RESEARCH_SYNTHESIS_READY,
+            ResearchStatus.PAPER_SUPPORT_READY,
         }:
             raise ValueError("Research plan state requires a planning lifecycle status")
         if self.status is ResearchStatus.AWAITING_RESEARCH_PLAN_APPROVAL and (
@@ -983,4 +1072,33 @@ class ResearchRun(BaseModel):
             self.result_submission is None or self.result_analysis is None
         ):
             raise ValueError("Analyzed-results status requires results and analysis")
+        if self.result_synthesis is not None:
+            if (
+                self.result_analysis is None
+                or self.plan_revision_state is None
+                or self.implementation_plan is None
+            ):
+                raise ValueError("Research synthesis requires analyzed results")
+            if (
+                self.result_synthesis.selected_direction_id
+                != self.selected_direction_id
+            ):
+                raise ValueError("Research synthesis changed the selected direction")
+            if (
+                self.result_synthesis.approved_plan_version
+                != self.plan_revision_state.active_version
+            ):
+                raise ValueError("Research synthesis changed approved plan version")
+            if (
+                self.result_synthesis.implementation_plan_version
+                != self.implementation_plan.approved_plan_version
+            ):
+                raise ValueError(
+                    "Research synthesis changed implementation plan version"
+                )
+        if (
+            self.status is ResearchStatus.RESEARCH_SYNTHESIS_READY
+            and self.result_synthesis is None
+        ):
+            raise ValueError("Research synthesis ready requires a synthesis")
         return self

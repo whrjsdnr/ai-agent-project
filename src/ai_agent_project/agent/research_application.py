@@ -15,6 +15,7 @@ from ai_agent_project.agent.research import (
     ResearchRequest,
     ResearchResultAnalysis,
     ResearchResultSubmission,
+    ResearchResultSynthesis,
     ResearchRun,
     ResearchStatus,
 )
@@ -24,6 +25,7 @@ from ai_agent_project.agent.research_planning import (
     ResearchImplementationPlanner,
     ResearchPlanGenerator,
     ResearchResultAnalyzer,
+    ResearchResultSynthesizer,
 )
 
 
@@ -103,6 +105,7 @@ class ResearchApplicationService:
         implementation_planner: ResearchImplementationPlanner | None = None,
         implementation_generator: ResearchImplementationGenerator | None = None,
         result_analyzer: ResearchResultAnalyzer | None = None,
+        result_synthesizer: ResearchResultSynthesizer | None = None,
     ) -> None:
         self._discovery_service = discovery_service
         self._store = store
@@ -110,6 +113,7 @@ class ResearchApplicationService:
         self._implementation_planner = implementation_planner
         self._implementation_generator = implementation_generator
         self._result_analyzer = result_analyzer
+        self._result_synthesizer = result_synthesizer
 
     def create_research_run(
         self, topic: str, *, user_context: str | None = None
@@ -411,6 +415,52 @@ class ResearchApplicationService:
             raise InvalidResearchStateError("Research results have not been analyzed")
         return analysis
 
+    def generate_synthesis(self, research_run_id: str) -> StoredResearchRun:
+        run = self._require_run(research_run_id)
+        if run.status is not ResearchStatus.RESEARCH_RESULTS_ANALYZED:
+            raise InvalidResearchStateError(
+                "Research synthesis requires analyzed results"
+            )
+        if (
+            self._result_synthesizer is None
+            or run.plan_revision_state is None
+            or run.implementation_plan is None
+            or run.result_submission is None
+            or run.result_analysis is None
+        ):
+            raise ResearchRunError("Research synthesis is not configured")
+        try:
+            payload = self._result_synthesizer.synthesize(
+                self._selected_direction(run),
+                run.plan_revision_state.active_plan,
+                run.implementation_plan,
+                run.result_submission,
+                run.result_analysis,
+            )
+        except Exception as error:
+            raise ResearchRunError("Research synthesis generation failed") from error
+        synthesis = ResearchResultSynthesis(
+            **payload.model_dump(),
+            selected_direction_id=run.selected_direction_id,
+            approved_plan_version=run.plan_revision_state.active_version,
+            implementation_plan_version=run.implementation_plan.approved_plan_version,
+        )
+        self._validate_synthesis(run, synthesis)
+        updated = run.model_copy(
+            update={
+                "status": ResearchStatus.RESEARCH_SYNTHESIS_READY,
+                "result_synthesis": synthesis,
+            }
+        )
+        self._store.replace(research_run_id, updated)
+        return StoredResearchRun(id=research_run_id, research_run=updated)
+
+    def get_synthesis(self, research_run_id: str) -> ResearchResultSynthesis:
+        synthesis = self._require_run(research_run_id).result_synthesis
+        if synthesis is None:
+            raise InvalidResearchStateError("Research synthesis has not been generated")
+        return synthesis
+
     @staticmethod
     def _result_guide(research_run_id: str, run: ResearchRun) -> str:
         version = (
@@ -582,6 +632,109 @@ class ResearchApplicationService:
             missing_evidence=payload.missing_evidence,
             recommended_next_steps=payload.recommended_next_steps,
         )
+
+    @staticmethod
+    def _validate_synthesis(
+        run: ResearchRun, synthesis: ResearchResultSynthesis
+    ) -> None:
+        assert run.plan_revision_state is not None
+        assert run.implementation_plan is not None
+        assert run.result_analysis is not None
+        objective_ids = {
+            item.id for item in run.plan_revision_state.active_plan.objectives
+        }
+        task_ids = {item.task_id for item in run.implementation_plan.tasks}
+        metric_ids = {item.id for item in run.plan_revision_state.active_plan.metrics}
+        finding_ids = {item.finding_id for item in run.result_analysis.findings}
+        evidence_refs = {
+            *(
+                f"metric:{item.metric_id}"
+                for item in run.result_submission.metric_observations
+            ),
+            *(f"task:{item.task_id}" for item in run.result_submission.task_results),
+            *(f"finding:{item.finding_id}" for item in run.result_analysis.findings),
+        }
+        conclusions = synthesis.objective_conclusions
+        unknown_objectives = sorted(
+            {item.objective_id for item in conclusions} - objective_ids
+        )
+        if unknown_objectives:
+            raise ResearchRunError(
+                "Research synthesis references unknown objective IDs: "
+                + ", ".join(unknown_objectives)
+            )
+        referenced_evidence = {
+            reference
+            for conclusion in conclusions
+            for reference in conclusion.evidence_refs
+        }
+        claims = (
+            *synthesis.major_findings,
+            *synthesis.inconclusive_findings,
+            *synthesis.negative_findings,
+            *synthesis.research_contributions,
+        )
+        unknown_claim_objectives = sorted(
+            {
+                reference
+                for claim in claims
+                for reference in claim.objective_ids
+                if reference not in objective_ids
+            }
+        )
+        if unknown_claim_objectives:
+            raise ResearchRunError(
+                "Research synthesis references unknown objective IDs: "
+                + ", ".join(unknown_claim_objectives)
+            )
+        unknown_tasks = sorted(
+            {
+                reference
+                for claim in claims
+                for reference in claim.task_ids
+                if reference not in task_ids
+            }
+        )
+        if unknown_tasks:
+            raise ResearchRunError(
+                "Research synthesis references unknown task IDs: "
+                + ", ".join(unknown_tasks)
+            )
+        unknown_metrics = sorted(
+            {
+                reference
+                for claim in claims
+                for reference in claim.metric_ids
+                if reference not in metric_ids
+            }
+        )
+        if unknown_metrics:
+            raise ResearchRunError(
+                "Research synthesis references unknown metric IDs: "
+                + ", ".join(unknown_metrics)
+            )
+        unknown_findings = sorted(
+            {
+                reference
+                for claim in claims
+                for reference in claim.analysis_finding_ids
+                if reference not in finding_ids
+            }
+        )
+        if unknown_findings:
+            raise ResearchRunError(
+                "Research synthesis references unknown analysis finding IDs: "
+                + ", ".join(unknown_findings)
+            )
+        referenced_evidence.update(
+            reference for claim in claims for reference in claim.evidence_refs
+        )
+        unknown_evidence = sorted(referenced_evidence - evidence_refs)
+        if unknown_evidence:
+            raise ResearchRunError(
+                "Research synthesis references unknown evidence: "
+                + ", ".join(unknown_evidence)
+            )
 
     @staticmethod
     def _selected_direction(run: ResearchRun):

@@ -209,6 +209,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ("show-results", "Show submitted user research results"),
         ("analyze-results", "Analyze submitted user research results"),
         ("show-analysis", "Show persisted research result analysis"),
+        ("synthesize", "Generate evidence-grounded research synthesis"),
+        ("show-synthesis", "Show persisted research result synthesis"),
     ):
         command = research_commands.add_parser(name, help=help_text)
         command.add_argument("research_run_id")
@@ -706,6 +708,16 @@ def _run_research_command(
             file=output,
         )
         return 0
+    if arguments.command == "synthesize":
+        _print_research_synthesis(
+            service.generate_synthesis(arguments.research_run_id), output
+        )
+        return 0
+    if arguments.command == "show-synthesis":
+        _print_research_synthesis_value(
+            service.get_synthesis(arguments.research_run_id), output
+        )
+        return 0
     stored = service.select_research_direction(
         arguments.research_run_id, arguments.direction_id
     )
@@ -868,3 +880,42 @@ def _print_implementation_package_value(package: object, output: TextIO) -> None
     print(f"Artifacts: {len(package.artifacts)}", file=output)
     print("Execution guide:", file=output)
     print(package.execution_guide, file=output)
+
+
+def _print_research_synthesis(stored: StoredResearchRun, output: TextIO) -> None:
+    synthesis = stored.research_run.result_synthesis
+    if synthesis is None:
+        raise CliError("Research synthesis is missing")
+    print(f"Status: {stored.research_run.status}", file=output)
+    _print_research_synthesis_value(synthesis, output)
+
+
+def _print_research_synthesis_value(synthesis: object, output: TextIO) -> None:
+    from ai_agent_project.agent.research import ResearchResultSynthesis
+
+    if not isinstance(synthesis, ResearchResultSynthesis):
+        raise CliError("Stored research synthesis is invalid")
+    print(f"Summary: {synthesis.synthesis_summary}", file=output)
+    print("Objective conclusions:", file=output)
+    for conclusion in synthesis.objective_conclusions:
+        print(
+            f"- {conclusion.objective_id}: {conclusion.assessment} — "
+            f"{conclusion.conclusion}",
+            file=output,
+        )
+    print("Findings:", file=output)
+    for finding in (
+        *synthesis.major_findings,
+        *synthesis.inconclusive_findings,
+        *synthesis.negative_findings,
+    ):
+        print(
+            f"- {finding.claim_id} ({finding.support_status}): {finding.statement}",
+            file=output,
+        )
+    print("Limitations:", file=output)
+    for limitation in synthesis.limitations:
+        print(f"- {limitation}", file=output)
+    print("Missing evidence:", file=output)
+    for missing in synthesis.missing_evidence:
+        print(f"- {missing}", file=output)

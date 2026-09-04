@@ -78,6 +78,9 @@ from ai_agent_project.llm.providers.openai_research_question_planner import (
 from ai_agent_project.llm.providers.openai_research_result_analyzer import (
     OpenAIResearchResultAnalyzer,
 )
+from ai_agent_project.llm.providers.openai_research_result_synthesizer import (
+    OpenAIResearchResultSynthesizer,
+)
 from ai_agent_project.llm.providers.openai_specification import (
     OpenAISpecificationParser,
 )
@@ -317,6 +320,7 @@ def create_default_research_application_service(
         OpenAIResearchImplementationPlanner(),
         OpenAIResearchImplementationGenerator(),
         OpenAIResearchResultAnalyzer(),
+        OpenAIResearchResultSynthesizer(),
     )
 
 
@@ -640,6 +644,36 @@ def create_app(
         except InvalidResearchStateError as error:
             raise HTTPException(
                 status_code=409, detail="Research analysis unavailable."
+            ) from error
+
+    @app.post("/v1/research-runs/{research_run_id}/synthesis")
+    def generate_research_synthesis(research_run_id: str) -> StoredResearchRun:
+        try:
+            return require_research_service().generate_synthesis(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research synthesis lifecycle conflict."
+            ) from error
+        except (ResearchRunError, ValueError) as error:
+            raise HTTPException(
+                status_code=503, detail="Research synthesis unavailable."
+            ) from error
+
+    @app.get("/v1/research-runs/{research_run_id}/synthesis")
+    def get_research_synthesis(research_run_id: str):
+        try:
+            return require_research_service().get_synthesis(research_run_id)
+        except ResearchRunNotFoundError as error:
+            raise HTTPException(
+                status_code=404, detail="Research run not found."
+            ) from error
+        except InvalidResearchStateError as error:
+            raise HTTPException(
+                status_code=409, detail="Research synthesis unavailable."
             ) from error
 
     @app.post("/v1/agent-runs", response_model=AgentRunResponse)

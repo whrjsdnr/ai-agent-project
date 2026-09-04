@@ -10,8 +10,10 @@ from ai_agent_project.agent.research import (
     ResearchPlan,
     ResearchQuestion,
     ResearchRequest,
+    ResearchResultAnalysis,
     ResearchResultAnalysisPayload,
     ResearchResultSubmission,
+    ResearchSynthesisPayload,
 )
 from ai_agent_project.agent.workspace import WorkspaceSnapshot
 
@@ -70,3 +72,16 @@ class ResearchResultAnalyzer(Protocol):
         implementation_plan: ResearchImplementationPlan,
         submission: ResearchResultSubmission,
     ) -> ResearchResultAnalysisPayload: ...
+
+
+class ResearchResultSynthesizer(Protocol):
+    """Synthesize only supplied analyzed results; never recreate authoritative state."""
+
+    def synthesize(
+        self,
+        direction: ResearchDirection,
+        approved_plan: ResearchPlan,
+        implementation_plan: ResearchImplementationPlan,
+        submission: ResearchResultSubmission,
+        analysis: ResearchResultAnalysis,
+    ) -> ResearchSynthesisPayload: ...
