@@ -5,13 +5,42 @@ import json
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from ai_agent_project.agent.checkpoint import CheckpointDecision
+from ai_agent_project.agent.hybrid_coordination import HybridCoordinationView
+from ai_agent_project.agent.hybrid_coordination_application import (
+    HybridCoordinationError,
+    HybridCoordinationService,
+)
+from ai_agent_project.agent.project_action_application import (
+    ApproveDeveloperPlanCommand,
+    ApproveResearchPlanCommand,
+    ContinueDeveloperCommand,
+    ContinueResearcherCommand,
+    ProjectActionError,
+    ProjectActionResult,
+    ProjectActionService,
+    ProvideResearchResultsCommand,
+    SelectResearchDirectionCommand,
+)
 from ai_agent_project.agent.project_application import (
     ProjectApplicationService,
     ProjectRunError,
     StoredProjectRun,
+)
+from ai_agent_project.agent.project_artifact_application import (
+    ProjectArtifactError,
+    ProjectArtifactService,
+)
+from ai_agent_project.agent.project_artifact_export import (
+    ProjectArtifactExportError,
+    ProjectArtifactExportService,
+)
+from ai_agent_project.agent.project_artifact_rendering import (
+    ProjectArtifactFormat,
+    ProjectArtifactRenderingError,
+    render_project_artifact,
 )
 from ai_agent_project.agent.project_file_store import (
     FileProjectRunStore,
@@ -27,7 +56,7 @@ from ai_agent_project.agent.project_session_file_store import (
     ProjectSessionStorageError,
     default_project_store_root,
 )
-from ai_agent_project.agent.research import WorkMode
+from ai_agent_project.agent.research import ResearchResultSubmission, WorkMode
 from ai_agent_project.agent.research_application import (
     ResearchApplicationService,
     ResearchRunError,
@@ -50,6 +79,10 @@ ResearchServiceBuilder = Callable[
     [Path, FileResearchRunStore], ResearchApplicationService
 ]
 ProjectSessionServiceBuilder = Callable[[FileProjectStore], ProjectSessionService]
+ProjectActionServiceBuilder = Callable[
+    [ProjectSessionService, FileProjectRunStore, FileResearchRunStore, Path],
+    ProjectActionService,
+]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -65,6 +98,7 @@ def run_cli(
     service_builder: ProjectServiceBuilder | None = None,
     research_service_builder: ResearchServiceBuilder | None = None,
     project_session_service_builder: ProjectSessionServiceBuilder | None = None,
+    project_action_service_builder: ProjectActionServiceBuilder | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -100,12 +134,20 @@ def run_cli(
                 output,
             )
         if arguments.top_level == "project-session":
+            session_builder = project_session_service_builder
+            if session_builder is None:
+                session_builder = (
+                    _build_production_project_session_service
+                    if arguments.command == "create"
+                    else _build_provider_free_project_session_service
+                )
             return _run_project_session_command(
                 arguments,
                 resolved_store_root,
-                project_session_service_builder
-                or _build_production_project_session_service,
+                session_builder,
                 output,
+                current_directory,
+                project_action_service_builder,
             )
         if arguments.command == "create":
             return _create_project(
@@ -129,6 +171,11 @@ def run_cli(
         ResearchRunStorageError,
         ProjectSessionError,
         ProjectSessionStorageError,
+        ProjectArtifactError,
+        ProjectArtifactRenderingError,
+        ProjectArtifactExportError,
+        ProjectActionError,
+        HybridCoordinationError,
         OSError,
         UnicodeError,
         ValueError,
@@ -217,10 +264,65 @@ def _build_parser() -> argparse.ArgumentParser:
         ("status", "Show a project session"),
         ("resume", "Show the next required project-session action"),
         ("pending-action", "Show required explicit human action(s)"),
+        ("coordination", "Show independent Hybrid workflow coordination"),
         ("complete", "Complete an active project session"),
     ):
         command = session_commands.add_parser(name, help=help_text)
         command.add_argument("project_id")
+    artifacts = session_commands.add_parser(
+        "artifacts", help="List linked authoritative project artifacts"
+    )
+    artifacts.add_argument("project_id")
+    artifact = session_commands.add_parser(
+        "artifact", help="Inspect one linked authoritative project artifact"
+    )
+    artifact.add_argument("project_id")
+    artifact.add_argument("artifact_id")
+    artifact.add_argument(
+        "--format",
+        choices=tuple(item.value for item in ProjectArtifactFormat),
+        default=ProjectArtifactFormat.JSON.value,
+    )
+    export_artifact = session_commands.add_parser(
+        "export-artifact", help="Export one linked artifact to one new local file"
+    )
+    export_artifact.add_argument("project_id")
+    export_artifact.add_argument("artifact_id")
+    export_artifact.add_argument(
+        "--format",
+        required=True,
+        choices=tuple(item.value for item in ProjectArtifactFormat),
+    )
+    export_artifact.add_argument("--output", required=True, type=Path)
+    approve_developer = session_commands.add_parser(
+        "approve-developer-plan", help="Explicitly approve the linked Developer plan"
+    )
+    approve_developer.add_argument("project_id")
+    select_direction = session_commands.add_parser(
+        "select-research-direction",
+        help="Explicitly select a linked Researcher direction",
+    )
+    select_direction.add_argument("project_id")
+    select_direction.add_argument("direction_id")
+    approve_research = session_commands.add_parser(
+        "approve-research-plan", help="Explicitly approve the linked Researcher plan"
+    )
+    approve_research.add_argument("project_id")
+    continue_developer = session_commands.add_parser(
+        "continue-developer", help="Explicitly advance one linked Developer phase"
+    )
+    continue_developer.add_argument("project_id")
+    continue_researcher = session_commands.add_parser(
+        "continue-researcher",
+        help="Explicitly advance one linked Researcher lifecycle step",
+    )
+    continue_researcher.add_argument("project_id")
+    provide_results = session_commands.add_parser(
+        "provide-research-results",
+        help="Submit authoritative user results to the linked Researcher run",
+    )
+    provide_results.add_argument("project_id")
+    provide_results.add_argument("--input", required=True, type=Path)
     confirm = session_commands.add_parser("confirm-mode", help="Confirm project modes")
     confirm.add_argument("project_id")
     confirm.add_argument(
@@ -357,9 +459,28 @@ def _run_project_session_command(
     store_root: Path,
     build_service: ProjectSessionServiceBuilder,
     output: TextIO,
+    cwd: Path | None = None,
+    build_action_service: ProjectActionServiceBuilder | None = None,
 ) -> int:
     store = FileProjectStore(store_root)
     service = build_service(store)
+    developer_store = FileProjectRunStore(default_project_run_store_root())
+    research_store = FileResearchRunStore(default_research_run_store_root())
+    artifact_service = ProjectArtifactService(
+        service,
+        developer_store,
+        research_store,
+    )
+    coordination_service = HybridCoordinationService(
+        service, developer_store, research_store
+    )
+    export_service = ProjectArtifactExportService(artifact_service)
+    action_service = (build_action_service or _build_project_action_service)(
+        service,
+        developer_store,
+        research_store,
+        cwd if cwd is not None else Path.cwd(),
+    )
     if arguments.command == "create":
         stored = service.create_project_request(
             arguments.request, title=arguments.title
@@ -370,6 +491,105 @@ def _run_project_session_command(
         _print_project_session(
             service.get_project(arguments.project_id).project, output
         )
+        return 0
+    if arguments.command == "coordination":
+        _print_hybrid_coordination(
+            coordination_service.get_coordination(arguments.project_id), output
+        )
+        return 0
+    if arguments.command == "artifacts":
+        catalog = artifact_service.list_artifacts(arguments.project_id)
+        print(f"Project ID: {catalog.project_id}", file=output)
+        print("Artifacts:", file=output)
+        if not catalog.artifacts:
+            print("- none", file=output)
+        for descriptor in catalog.artifacts:
+            print(
+                f"- {descriptor.artifact_id} | {descriptor.artifact_type} | "
+                f"{descriptor.title} | {','.join(descriptor.media_types)}",
+                file=output,
+            )
+        return 0
+    if arguments.command == "artifact":
+        view = artifact_service.get_artifact(
+            arguments.project_id, arguments.artifact_id
+        )
+        artifact_format = ProjectArtifactFormat(arguments.format)
+        rendered = render_project_artifact(view, artifact_format)
+        output.write(rendered)
+        if artifact_format is not ProjectArtifactFormat.TEXT and not rendered.endswith(
+            "\n"
+        ):
+            output.write("\n")
+        return 0
+    if arguments.command == "export-artifact":
+        requested = arguments.output
+        destination = (
+            requested
+            if requested.is_absolute()
+            else (cwd if cwd is not None else Path.cwd()) / requested
+        )
+        result = export_service.export_artifact(
+            arguments.project_id,
+            arguments.artifact_id,
+            ProjectArtifactFormat(arguments.format),
+            destination,
+        )
+        print(f"Exported artifact: {result.artifact_id}", file=output)
+        print(f"Format: {result.format}", file=output)
+        print(f"Output: {result.output_path}", file=output)
+        print(f"Bytes: {result.bytes_written}", file=output)
+        print(f"SHA-256: {result.sha256}", file=output)
+        return 0
+    if arguments.command == "approve-developer-plan":
+        result = action_service.approve_developer_plan(
+            ApproveDeveloperPlanCommand(project_id=arguments.project_id)
+        )
+        _print_project_action_result(result, output)
+        return 0
+    if arguments.command == "select-research-direction":
+        result = action_service.select_research_direction(
+            SelectResearchDirectionCommand(
+                project_id=arguments.project_id,
+                direction_id=arguments.direction_id,
+            )
+        )
+        _print_project_action_result(result, output)
+        return 0
+    if arguments.command == "approve-research-plan":
+        result = action_service.approve_research_plan(
+            ApproveResearchPlanCommand(project_id=arguments.project_id)
+        )
+        _print_project_action_result(result, output)
+        return 0
+    if arguments.command == "continue-developer":
+        result = action_service.continue_developer(
+            ContinueDeveloperCommand(project_id=arguments.project_id)
+        )
+        _print_project_action_result(result, output)
+        return 0
+    if arguments.command == "continue-researcher":
+        result = action_service.continue_researcher(
+            ContinueResearcherCommand(project_id=arguments.project_id)
+        )
+        _print_project_action_result(result, output)
+        return 0
+    if arguments.command == "provide-research-results":
+        result_path = _resolve_path(arguments.input, cwd or Path.cwd())
+        try:
+            submission = ResearchResultSubmission.model_validate_json(
+                result_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as error:
+            raise CliError(
+                f"Could not read valid result JSON: {result_path}"
+            ) from error
+        result = action_service.provide_research_results(
+            ProvideResearchResultsCommand(
+                project_id=arguments.project_id, submission=submission
+            )
+        )
+        _print_project_action_result(result, output)
         return 0
     if arguments.command == "confirm-mode":
         stored = service.confirm_project_mode(
@@ -924,6 +1144,205 @@ def _build_production_project_session_service(
         store=store,
         developer_run_reader=FileProjectRunStore(default_project_run_store_root()),
         research_run_reader=FileResearchRunStore(default_research_run_store_root()),
+    )
+
+
+def _build_provider_free_project_session_service(
+    store: FileProjectStore,
+) -> ProjectSessionService:
+    """Compose project-session reads and explicit transitions without a provider."""
+    return ProjectSessionService(
+        store,
+        developer_run_reader=FileProjectRunStore(default_project_run_store_root()),
+        research_run_reader=FileResearchRunStore(default_research_run_store_root()),
+    )
+
+
+class _CliDeveloperActions:
+    def __init__(self, store: FileProjectRunStore) -> None:
+        self._store = store
+        self._checkpoint_service = _checkpoint_project_service(store)
+
+    def approve_plan(self, run_id: str) -> StoredProjectRun:
+        return self._checkpoint_service.approve_plan(run_id)
+
+    def execute_current_phase(self, run_id: str) -> StoredProjectRun:
+        workspace = self._store.workspace_root_for(run_id)
+        return _build_production_service(workspace, self._store).execute_current_phase(
+            run_id
+        )
+
+
+class _CliResearchActions:
+    def __init__(self, store: FileResearchRunStore) -> None:
+        self._store = store
+        self._checkpoint_service = _checkpoint_research_service(store)
+
+    def get_research_run(self, run_id: str) -> StoredResearchRun:
+        return self._checkpoint_service.get_research_run(run_id)
+
+    def select_research_direction(
+        self, run_id: str, direction_id: str
+    ) -> StoredResearchRun:
+        return self._checkpoint_service.select_research_direction(run_id, direction_id)
+
+    def approve_plan(self, run_id: str) -> StoredResearchRun:
+        return self._checkpoint_service.approve_plan(run_id)
+
+    def submit_results(
+        self, run_id: str, submission: ResearchResultSubmission
+    ) -> StoredResearchRun:
+        return self._checkpoint_service.submit_results(run_id, submission)
+
+    def generate_plan(self, run_id: str) -> StoredResearchRun:
+        from ai_agent_project.llm.providers.openai_research_plan_generator import (
+            OpenAIResearchPlanGenerator,
+        )
+
+        return self._production(
+            plan_generator=OpenAIResearchPlanGenerator()
+        ).generate_plan(run_id)
+
+    def generate_implementation_plan(self, run_id: str) -> StoredResearchRun:
+        from ai_agent_project.llm.providers.openai_research_implementation import (
+            OpenAIResearchImplementationPlanner,
+        )
+
+        return self._production(
+            implementation_planner=OpenAIResearchImplementationPlanner()
+        ).generate_implementation_plan(run_id)
+
+    def generate_implementation_package(self, run_id: str) -> StoredResearchRun:
+        from ai_agent_project.llm.providers.openai_research_implementation import (
+            OpenAIResearchImplementationGenerator,
+        )
+
+        return self._production(
+            implementation_generator=OpenAIResearchImplementationGenerator()
+        ).generate_implementation_package(run_id)
+
+    def analyze_results(self, run_id: str) -> StoredResearchRun:
+        from ai_agent_project.llm.providers.openai_research_result_analyzer import (
+            OpenAIResearchResultAnalyzer,
+        )
+
+        return self._production(
+            result_analyzer=OpenAIResearchResultAnalyzer()
+        ).analyze_results(run_id)
+
+    def generate_synthesis(self, run_id: str) -> StoredResearchRun:
+        from ai_agent_project.llm.providers.openai_research_result_synthesizer import (
+            OpenAIResearchResultSynthesizer,
+        )
+
+        return self._production(
+            result_synthesizer=OpenAIResearchResultSynthesizer()
+        ).generate_synthesis(run_id)
+
+    def generate_paper_materials(self, run_id: str) -> StoredResearchRun:
+        from ai_agent_project.llm.providers.openai_research_paper_materials import (
+            OpenAIResearchPaperMaterialsGenerator,
+        )
+
+        return self._production(
+            paper_materials_generator=OpenAIResearchPaperMaterialsGenerator()
+        ).generate_paper_materials(run_id)
+
+    def _production(self, **providers: object) -> ResearchApplicationService:
+        from ai_agent_project.agent.research_discovery import ResearchDiscoveryService
+
+        return ResearchApplicationService(
+            cast(ResearchDiscoveryService, object()),
+            self._store,
+            **providers,  # type: ignore[arg-type]
+        )
+
+
+def _build_project_action_service(
+    sessions: ProjectSessionService,
+    developer_store: FileProjectRunStore,
+    research_store: FileResearchRunStore,
+    workspace: Path,
+) -> ProjectActionService:
+    """Compose lazy progression plus provider-free checkpoint domain services."""
+    del workspace
+    return ProjectActionService(
+        sessions,
+        _CliDeveloperActions(developer_store),
+        _CliResearchActions(research_store),
+    )
+
+
+def _checkpoint_project_service(
+    developer_store: FileProjectRunStore,
+) -> ProjectApplicationService:
+    from ai_agent_project.agent.checkpoint import (
+        PhaseCheckpointService,
+        ProgressReporter,
+    )
+    from ai_agent_project.agent.phase_execution import PhaseExecutionService
+    from ai_agent_project.agent.project_execution import ProjectExecutionService
+    from ai_agent_project.agent.project_runner import ProjectRunner
+
+    unavailable = object()
+    execution = ProjectExecutionService(
+        cast(PhaseExecutionService, unavailable),
+        ProgressReporter(),
+        PhaseCheckpointService(),
+    )
+    return ProjectApplicationService(
+        cast(ProjectRunner, unavailable), execution, developer_store
+    )
+
+
+def _checkpoint_research_service(
+    research_store: FileResearchRunStore,
+) -> ResearchApplicationService:
+    from ai_agent_project.agent.research_discovery import ResearchDiscoveryService
+
+    unavailable = object()
+    return ResearchApplicationService(
+        cast(ResearchDiscoveryService, unavailable), research_store
+    )
+
+
+def _print_project_action_result(result: ProjectActionResult, output: TextIO) -> None:
+    next_action = (
+        result.next_pending_action.action_type.value
+        if result.next_pending_action is not None
+        else "none"
+    )
+    print(f"Project ID: {result.project_id}", file=output)
+    print(f"Action: {result.action.value}", file=output)
+    print(
+        f"Previous pending action: {result.previous_pending_action.action_type.value}",
+        file=output,
+    )
+    print(f"Next pending action: {next_action}", file=output)
+    print(f"Source domain: {result.source_domain.value}", file=output)
+    print(f"Source run: {result.source_run_id}", file=output)
+    print(f"Source status: {result.source_status}", file=output)
+
+
+def _print_hybrid_coordination(view: HybridCoordinationView, output: TextIO) -> None:
+    print(f"Project ID: {view.project_id}", file=output)
+    print(f"Project status: {view.project_status}", file=output)
+    for label, lane in (("Developer", view.developer), ("Researcher", view.researcher)):
+        action = (
+            lane.pending_action.action_type.value if lane.pending_action else "none"
+        )
+        print(f"{label} run ID: {lane.run_id or '-'}", file=output)
+        print(f"{label} status: {lane.source_status or '-'}", file=output)
+        print(f"{label} pending action: {action}", file=output)
+        print(f"{label} terminal: {str(lane.terminal).lower()}", file=output)
+    print("Actionable actions:", file=output)
+    if not view.actionable_actions:
+        print("- none", file=output)
+    for action in view.actionable_actions:
+        print(f"- {action.action_type.value}", file=output)
+    print(
+        f"Both workflows terminal: {str(view.both_workflows_terminal).lower()}",
+        file=output,
     )
 
 

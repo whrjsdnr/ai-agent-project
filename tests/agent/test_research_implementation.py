@@ -362,6 +362,34 @@ def test_result_intake_preserves_user_values_without_execution() -> None:
     assert analyzed.research_run.status is ResearchStatus.RESEARCH_RESULTS_ANALYZED
 
 
+def test_result_intake_accepts_package_ready_without_mutating_guidance_step() -> None:
+    plan = _implementation_plan()
+    store = InMemoryResearchRunStore()
+    store.create(
+        "run",
+        _approved_run().model_copy(
+            update={
+                "status": ResearchStatus.IMPLEMENTATION_PACKAGE_READY,
+                "implementation_plan": plan,
+                "implementation_package": _package(plan),
+            }
+        ),
+    )
+    service = ResearchApplicationService(object(), store)
+    submission = ResearchResultSubmission(
+        research_run_id="run",
+        approved_plan_version=1,
+        implementation_plan_version=1,
+        user_observations=("Authoritative exact observation",),
+    )
+
+    submitted = service.submit_results("run", submission)
+
+    assert submitted.research_run.status is ResearchStatus.RESEARCH_RESULTS_SUBMITTED
+    assert submitted.research_run.result_submission == submission
+    assert submitted.research_run.result_analysis is None
+
+
 def test_file_store_round_trips_result_submission_and_analysis(tmp_path) -> None:
     class Analyzer:
         def analyze(self, approved_plan, implementation_plan, submission):

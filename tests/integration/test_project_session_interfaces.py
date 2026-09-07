@@ -4,6 +4,10 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+import ai_agent_project.cli as cli_module
+from ai_agent_project.agent.hybrid_coordination_application import (
+    HybridCoordinationService,
+)
 from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.project import (
     ProjectPhase,
@@ -192,7 +196,9 @@ def test_project_session_api_confirmation_binding_and_provider_free_reads() -> N
     assert client.get("/v1/projects/missing").status_code == 404
 
 
-def test_pending_actions_resolve_from_fresh_file_stores(tmp_path: Path) -> None:
+def test_pending_actions_resolve_from_fresh_file_stores(
+    tmp_path: Path, monkeypatch
+) -> None:
     session_root = tmp_path / "sessions"
     developer_root = tmp_path / "developers"
     research_root = tmp_path / "research"
@@ -318,3 +324,53 @@ def test_pending_actions_resolve_from_fresh_file_stores(tmp_path: Path) -> None:
     assert FileProjectStore(session_root).get(project_id).updated_at == (
         initial.get_project(project_id).project.updated_at
     )
+
+    monkeypatch.setattr(
+        cli_module, "default_project_run_store_root", lambda: developer_root
+    )
+    monkeypatch.setattr(
+        cli_module, "default_research_run_store_root", lambda: research_root
+    )
+    output = StringIO()
+    assert (
+        run_cli(
+            [
+                "project-session",
+                "--store-root",
+                str(session_root),
+                "coordination",
+                project_id,
+            ],
+            project_session_service_builder=lambda _store: reopened,
+            stdout=output,
+        )
+        == 0
+    )
+    assert output.getvalue().index("Developer run ID") < output.getvalue().index(
+        "Researcher run ID"
+    )
+    assert "Developer pending action: approve_developer_plan" in output.getvalue()
+    assert "Researcher pending action: select_research_direction" in output.getvalue()
+
+    coordination = HybridCoordinationService(
+        reopened,
+        FileProjectRunStore(developer_root),
+        FileResearchRunStore(research_root),
+    )
+    client = TestClient(
+        create_app(
+            project_session_service=reopened,
+            hybrid_coordination_service=coordination,
+        )
+    )
+    response = client.get(f"/v1/projects/{project_id}/coordination")
+    assert response.status_code == 200
+    assert [item["action_type"] for item in response.json()["actionable_actions"]] == [
+        "approve_developer_plan",
+        "select_research_direction",
+    ]
+
+    non_hybrid = initial.create_project_request("Single lane").id
+    initial.confirm_project_mode(non_hybrid, WorkMode.DEVELOPER, ProjectMode.NEW)
+    assert client.get(f"/v1/projects/{non_hybrid}/coordination").status_code == 409
+    assert client.get(f"/v1/projects/{uuid4()}/coordination").status_code == 404

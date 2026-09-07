@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field, field_validator
 
 from ai_agent_project.agent.acceptance import AcceptanceReport
@@ -17,9 +17,26 @@ from ai_agent_project.agent.coding_service import (
     CodingRunResult,
     RepairAttempt,
 )
+from ai_agent_project.agent.hybrid_coordination import HybridCoordinationView
+from ai_agent_project.agent.hybrid_coordination_application import (
+    HybridCoordinationError,
+    HybridCoordinationService,
+)
 from ai_agent_project.agent.phase_execution import PhaseExecutionService
 from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.plan_revision import PlanRevisionState
+from ai_agent_project.agent.project_action_application import (
+    ApproveDeveloperPlanCommand,
+    ApproveResearchPlanCommand,
+    ContinueDeveloperCommand,
+    ContinueResearcherCommand,
+    ProjectActionCompletedError,
+    ProjectActionNotAllowedError,
+    ProjectActionResult,
+    ProjectActionService,
+    ProvideResearchResultsCommand,
+    SelectResearchDirectionCommand,
+)
 from ai_agent_project.agent.project_application import (
     InMemoryProjectRunStore,
     ProjectApplicationService,
@@ -29,6 +46,22 @@ from ai_agent_project.agent.project_application import (
     ProjectRunNotFoundError,
     ProjectRunStore,
     StoredProjectRun,
+)
+from ai_agent_project.agent.project_artifact import (
+    ProjectArtifactCatalog,
+    ProjectArtifactView,
+)
+from ai_agent_project.agent.project_artifact_application import (
+    ProjectArtifactError,
+    ProjectArtifactNotFoundError,
+    ProjectArtifactService,
+)
+from ai_agent_project.agent.project_artifact_rendering import (
+    MARKDOWN_MEDIA_TYPE,
+    TEXT_MEDIA_TYPE,
+    ProjectArtifactFormat,
+    ProjectArtifactRenderingError,
+    render_project_artifact,
 )
 from ai_agent_project.agent.project_execution import ProjectExecutionService
 from ai_agent_project.agent.project_runner import ProjectRunner, UpgradeProjectRunner
@@ -43,7 +76,7 @@ from ai_agent_project.agent.project_session_application import (
     ResearchRunReader,
     StoredProjectSession,
 )
-from ai_agent_project.agent.research import WorkMode
+from ai_agent_project.agent.research import ResearchResultSubmission, WorkMode
 from ai_agent_project.agent.research_application import (
     InMemoryResearchRunStore,
     InvalidResearchStateError,
@@ -393,6 +426,9 @@ def create_app(
     acceptance_validator: AcceptanceValidator | None = None,
     project_application_service: ProjectApplicationService | None = None,
     project_session_service: ProjectSessionService | None = None,
+    project_artifact_service: ProjectArtifactService | None = None,
+    project_action_service: ProjectActionService | None = None,
+    hybrid_coordination_service: HybridCoordinationService | None = None,
     research_application_service: ResearchApplicationService | None = None,
 ) -> FastAPI:
     """Create the FastAPI app with injectable agent and default workspace root."""
@@ -425,12 +461,33 @@ def create_app(
             developer_run_reader=project_run_store,
             research_run_reader=research_run_store,
         )
+    if project_artifact_service is None:
+        project_artifact_service = ProjectArtifactService(
+            project_session_service,
+            project_run_store,
+            research_run_store,
+        )
+    if project_action_service is None:
+        project_action_service = ProjectActionService(
+            project_session_service,
+            project_application_service,
+            research_application_service,
+        )
+    if hybrid_coordination_service is None:
+        hybrid_coordination_service = HybridCoordinationService(
+            project_session_service,
+            project_run_store,
+            research_run_store,
+        )
 
     app = FastAPI(title="AI Agent Project")
     app.state.agent_service = agent_service
     app.state.coding_agent_service = coding_agent_service
     app.state.project_application_service = project_application_service
     app.state.project_session_service = project_session_service
+    app.state.project_artifact_service = project_artifact_service
+    app.state.project_action_service = project_action_service
+    app.state.hybrid_coordination_service = hybrid_coordination_service
     app.state.research_application_service = research_application_service
 
     @app.get("/health")
@@ -449,6 +506,18 @@ def create_app(
     def require_project_session_service() -> ProjectSessionService:
         assert project_session_service is not None
         return project_session_service
+
+    def require_project_artifact_service() -> ProjectArtifactService:
+        assert project_artifact_service is not None
+        return project_artifact_service
+
+    def require_project_action_service() -> ProjectActionService:
+        assert project_action_service is not None
+        return project_action_service
+
+    def require_hybrid_coordination_service() -> HybridCoordinationService:
+        assert hybrid_coordination_service is not None
+        return hybrid_coordination_service
 
     @app.post("/v1/projects", response_model=StoredProjectSession, status_code=201)
     def create_project_session(
@@ -545,6 +614,191 @@ def create_app(
         except ProjectSessionNotFoundError as error:
             raise HTTPException(status_code=404, detail="Project not found.") from error
         except ProjectSessionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get(
+        "/v1/projects/{project_id}/coordination",
+        response_model=HybridCoordinationView,
+    )
+    def get_hybrid_coordination(project_id: str) -> HybridCoordinationView:
+        try:
+            return require_hybrid_coordination_service().get_coordination(project_id)
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Project not found.") from error
+        except (HybridCoordinationError, ProjectSessionError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get(
+        "/v1/projects/{project_id}/artifacts",
+        response_model=ProjectArtifactCatalog,
+    )
+    def list_project_artifacts(project_id: str) -> ProjectArtifactCatalog:
+        try:
+            return require_project_artifact_service().list_artifacts(project_id)
+        except ProjectArtifactNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProjectArtifactError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get(
+        "/v1/projects/{project_id}/artifacts/{artifact_id}",
+        response_model=None,
+    )
+    def inspect_project_artifact(
+        project_id: str,
+        artifact_id: str,
+        format: ProjectArtifactFormat = ProjectArtifactFormat.JSON,
+    ) -> ProjectArtifactView | Response:
+        try:
+            view = require_project_artifact_service().get_artifact(
+                project_id, artifact_id
+            )
+            if format is ProjectArtifactFormat.JSON:
+                return view
+            media_type = (
+                MARKDOWN_MEDIA_TYPE
+                if format is ProjectArtifactFormat.MARKDOWN
+                else TEXT_MEDIA_TYPE
+            )
+            return Response(
+                content=render_project_artifact(view, format),
+                media_type=media_type,
+            )
+        except ProjectArtifactNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProjectArtifactRenderingError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ProjectArtifactError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/actions/approve-developer-plan",
+        response_model=ProjectActionResult,
+    )
+    def route_developer_plan_approval(project_id: str) -> ProjectActionResult:
+        try:
+            return require_project_action_service().approve_developer_plan(
+                ApproveDeveloperPlanCommand(project_id=project_id)
+            )
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProjectRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (
+            ProjectActionNotAllowedError,
+            ProjectActionCompletedError,
+            ProjectSessionError,
+            ProjectRunError,
+        ) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/actions/select-research-direction",
+        response_model=ProjectActionResult,
+    )
+    def route_research_direction_selection(
+        project_id: str, request: SelectResearchDirectionRequest
+    ) -> ProjectActionResult:
+        try:
+            return require_project_action_service().select_research_direction(
+                SelectResearchDirectionCommand(
+                    project_id=project_id, direction_id=request.direction_id
+                )
+            )
+        except (
+            ProjectSessionNotFoundError,
+            ResearchRunNotFoundError,
+            ResearchDirectionNotFoundError,
+        ) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (
+            ProjectActionNotAllowedError,
+            ProjectActionCompletedError,
+            ProjectSessionError,
+            ResearchRunError,
+        ) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/actions/approve-research-plan",
+        response_model=ProjectActionResult,
+    )
+    def route_research_plan_approval(project_id: str) -> ProjectActionResult:
+        try:
+            return require_project_action_service().approve_research_plan(
+                ApproveResearchPlanCommand(project_id=project_id)
+            )
+        except (ProjectSessionNotFoundError, ResearchRunNotFoundError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (
+            ProjectActionNotAllowedError,
+            ProjectActionCompletedError,
+            ProjectSessionError,
+            ResearchRunError,
+        ) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/actions/continue-developer",
+        response_model=ProjectActionResult,
+    )
+    def route_developer_continuation(project_id: str) -> ProjectActionResult:
+        try:
+            return require_project_action_service().continue_developer(
+                ContinueDeveloperCommand(project_id=project_id)
+            )
+        except (ProjectSessionNotFoundError, ProjectRunNotFoundError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (
+            ProjectActionNotAllowedError,
+            ProjectActionCompletedError,
+            ProjectSessionError,
+            ProjectRunError,
+            ValueError,
+        ) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/actions/continue-researcher",
+        response_model=ProjectActionResult,
+    )
+    def route_researcher_continuation(project_id: str) -> ProjectActionResult:
+        try:
+            return require_project_action_service().continue_researcher(
+                ContinueResearcherCommand(project_id=project_id)
+            )
+        except (ProjectSessionNotFoundError, ResearchRunNotFoundError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (
+            ProjectActionNotAllowedError,
+            ProjectActionCompletedError,
+            ProjectSessionError,
+            ResearchRunError,
+            ValueError,
+        ) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/actions/provide-research-results",
+        response_model=ProjectActionResult,
+    )
+    def route_research_result_submission(
+        project_id: str, submission: ResearchResultSubmission
+    ) -> ProjectActionResult:
+        try:
+            return require_project_action_service().provide_research_results(
+                ProvideResearchResultsCommand(
+                    project_id=project_id, submission=submission
+                )
+            )
+        except (ProjectSessionNotFoundError, ResearchRunNotFoundError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (
+            ProjectActionNotAllowedError,
+            ProjectActionCompletedError,
+            ProjectSessionError,
+            ResearchRunError,
+        ) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.post(

@@ -363,7 +363,10 @@ class ResearchApplicationService:
         self, research_run_id: str, submission: ResearchResultSubmission
     ) -> StoredResearchRun:
         run = self._require_run(research_run_id)
-        if run.status is not ResearchStatus.AWAITING_USER_RESULTS:
+        if run.status not in {
+            ResearchStatus.IMPLEMENTATION_PACKAGE_READY,
+            ResearchStatus.AWAITING_USER_RESULTS,
+        }:
             raise InvalidResearchStateError(
                 "Result submission is not allowed in this state"
             )
