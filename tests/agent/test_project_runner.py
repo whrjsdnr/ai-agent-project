@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from ai_agent_project.agent.developer_bootstrap_context import DeveloperBootstrapContext
 from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.project import (
     ProjectPhase,
@@ -75,10 +76,14 @@ class FakeParser:
         self._specification = specification
         self._calls = calls
         self.text: str | None = None
+        self.context: DeveloperBootstrapContext | None = None
 
-    def parse(self, text: str) -> Specification:
+    def parse(
+        self, text: str, *, context: DeveloperBootstrapContext | None = None
+    ) -> Specification:
         self._calls.append("parse")
         self.text = text
+        self.context = context
         if isinstance(self._specification, Exception):
             raise self._specification
         return self._specification
@@ -240,6 +245,35 @@ def test_project_runner_bootstraps_in_exact_order_without_phase_execution() -> N
         project_plan,
     )
     assert run.execution_state.status is ProjectExecutionStatus.AWAITING_PLAN_APPROVAL
+
+
+def test_project_runner_forwards_optional_context_only_to_parser() -> None:
+    calls: list[str] = []
+    plan = make_implementation_plan()
+    runner, _, _, _ = make_runner(
+        make_specification(),
+        WorkspaceSnapshot(files=[]),
+        plan,
+        make_project_plan(plan),
+        calls,
+    )
+    context = DeveloperBootstrapContext(
+        source_label="verified-research-handoff",
+        artifact_type="research_synthesis",
+        source_version="v1",
+        content={"directions": ["use evidence"]},
+    )
+
+    run = runner.start("request", context=context)
+
+    assert run.execution_state.status is ProjectExecutionStatus.AWAITING_PLAN_APPROVAL
+    assert calls == [
+        "parse",
+        "inspect",
+        "implementation_plan",
+        "project_plan",
+        "execution_start",
+    ]
     assert run.plan_revision_state is not None
     assert run.plan_revision_state.active_version == 1
     assert all(record.execution is None for record in run.execution_state.phase_records)

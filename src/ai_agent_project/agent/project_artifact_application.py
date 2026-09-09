@@ -1,7 +1,6 @@
 """Derived artifact catalog and exact JSON inspection for linked project runs."""
 
 import hashlib
-import json
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -15,7 +14,10 @@ from ai_agent_project.agent.project_artifact import (
     ProjectArtifactType,
     ProjectArtifactView,
 )
-from ai_agent_project.agent.project_artifact_rendering import supported_media_types
+from ai_agent_project.agent.project_artifact_rendering import (
+    canonical_artifact_content_bytes,
+    supported_media_types,
+)
 from ai_agent_project.agent.project_runner import ProjectRun
 from ai_agent_project.agent.project_session import ProjectSession, ProjectStatus
 from ai_agent_project.agent.project_session_application import (
@@ -380,10 +382,5 @@ def _entry(
 
 
 def _content_version(content: BaseModel) -> str:
-    encoded = json.dumps(
-        content.model_dump(mode="json"),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    encoded = canonical_artifact_content_bytes(content.model_dump(mode="json"))
     return f"sha256-{hashlib.sha256(encoded).hexdigest()}"

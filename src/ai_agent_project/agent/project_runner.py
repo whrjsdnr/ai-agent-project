@@ -3,6 +3,7 @@
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from ai_agent_project.agent.codebase_analysis import CodebaseAnalyzer
+from ai_agent_project.agent.developer_bootstrap_context import DeveloperBootstrapContext
 from ai_agent_project.agent.plan import ImplementationPlan, ImplementationPlanner
 from ai_agent_project.agent.plan_revision import PlanRevisionState
 from ai_agent_project.agent.project import (
@@ -15,6 +16,7 @@ from ai_agent_project.agent.project_execution import (
     ProjectExecutionState,
     ProjectExecutionStatus,
 )
+from ai_agent_project.agent.project_handoff import ResearchBootstrapProvenance
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.specification_parser import SpecificationParser
 from ai_agent_project.agent.upgrade import (
@@ -42,6 +44,7 @@ class ProjectRun(BaseModel):
     plan_revision_state: PlanRevisionState | None = None
     mode: ProjectMode = ProjectMode.NEW
     upgrade_context: UpgradeContext | None = None
+    research_bootstrap: ResearchBootstrapProvenance | None = None
 
     @model_validator(mode="after")
     def synchronize_active_plan(self) -> "ProjectRun":
@@ -87,9 +90,15 @@ class ProjectRunner:
         *,
         project_title: str | None = None,
         source_format: str | None = None,
+        context: DeveloperBootstrapContext | None = None,
     ) -> ProjectRun:
         """Build a ready project state without running any coding phase."""
-        specification = self._specification_parser.parse(source_text)
+        if context is None:
+            specification = self._specification_parser.parse(source_text)
+        else:
+            specification = self._specification_parser.parse(
+                source_text, context=context
+            )
         project_specification = ProjectSpecification.from_specification(specification)
         project_specification = project_specification.model_copy(
             update={

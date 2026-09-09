@@ -42,11 +42,23 @@ from ai_agent_project.agent.project_artifact_rendering import (
     ProjectArtifactRenderingError,
     render_project_artifact,
 )
+from ai_agent_project.agent.project_developer_bootstrap_application import (
+    ProjectDeveloperBootstrapService,
+)
 from ai_agent_project.agent.project_file_store import (
     FileProjectRunStore,
     ProjectRunStorageError,
     default_project_run_store_root,
 )
+from ai_agent_project.agent.project_handoff import ProjectHandoffPurpose
+from ai_agent_project.agent.project_handoff_application import (
+    ProjectHandoffError,
+    ProjectHandoffService,
+)
+from ai_agent_project.agent.project_handoff_consumption import (
+    ProjectHandoffConsumptionService,
+)
+from ai_agent_project.agent.project_handoff_file_store import FileProjectHandoffStore
 from ai_agent_project.agent.project_session_application import (
     ProjectSessionError,
     ProjectSessionService,
@@ -176,6 +188,7 @@ def run_cli(
         ProjectArtifactExportError,
         ProjectActionError,
         HybridCoordinationError,
+        ProjectHandoffError,
         OSError,
         UnicodeError,
         ValueError,
@@ -283,6 +296,28 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=tuple(item.value for item in ProjectArtifactFormat),
         default=ProjectArtifactFormat.JSON.value,
     )
+    handoff_artifact = session_commands.add_parser(
+        "handoff-artifact", help="Select one Researcher artifact for Developer context"
+    )
+    handoff_artifact.add_argument("project_id")
+    handoff_artifact.add_argument("artifact_id")
+    handoff_artifact.add_argument("--to", required=True, choices=("developer",))
+    handoff_artifact.add_argument(
+        "--purpose",
+        required=True,
+        choices=tuple(item.value for item in ProjectHandoffPurpose),
+    )
+    handoffs = session_commands.add_parser(
+        "handoffs", help="List persisted artifact handoff references"
+    )
+    handoffs.add_argument("project_id")
+    bootstrap = session_commands.add_parser(
+        "bootstrap-developer",
+        help="Bootstrap a Developer run from a Researcher handoff",
+    )
+    bootstrap.add_argument("project_id")
+    bootstrap.add_argument("handoff_id")
+    bootstrap.add_argument("--request", required=True)
     export_artifact = session_commands.add_parser(
         "export-artifact", help="Export one linked artifact to one new local file"
     )
@@ -464,12 +499,22 @@ def _run_project_session_command(
 ) -> int:
     store = FileProjectStore(store_root)
     service = build_service(store)
-    developer_store = FileProjectRunStore(default_project_run_store_root())
+    developer_store = FileProjectRunStore(
+        default_project_run_store_root(),
+        workspace_root=cwd if cwd is not None else Path.cwd(),
+    )
     research_store = FileResearchRunStore(default_research_run_store_root())
     artifact_service = ProjectArtifactService(
         service,
         developer_store,
         research_store,
+    )
+    handoff_store = FileProjectHandoffStore(store_root / "handoffs")
+    handoff_service = ProjectHandoffService(
+        service,
+        artifact_service,
+        handoff_store,
+        research_reader=research_store,
     )
     coordination_service = HybridCoordinationService(
         service, developer_store, research_store
@@ -507,6 +552,51 @@ def _run_project_session_command(
             print(
                 f"- {descriptor.artifact_id} | {descriptor.artifact_type} | "
                 f"{descriptor.title} | {','.join(descriptor.media_types)}",
+                file=output,
+            )
+        return 0
+    if arguments.command == "handoff-artifact":
+        handoff = handoff_service.register(
+            arguments.project_id,
+            arguments.artifact_id,
+            ProjectHandoffPurpose(arguments.purpose),
+        )
+        print(f"Handoff ID: {handoff.handoff_id}", file=output)
+        print(f"Project ID: {handoff.project_id}", file=output)
+        print(f"Artifact ID: {handoff.artifact_id}", file=output)
+        print(f"Source run ID: {handoff.source_run_id}", file=output)
+        print(f"SHA-256: {handoff.content_sha256}", file=output)
+        print(f"Purpose: {handoff.purpose}", file=output)
+        return 0
+    if arguments.command == "bootstrap-developer":
+        bootstrap_service = ProjectDeveloperBootstrapService(
+            service,
+            ProjectHandoffConsumptionService(
+                service, artifact_service, handoff_store, research_store
+            ),
+            _build_production_service(
+                cwd if cwd is not None else Path.cwd(), developer_store
+            ),
+        )
+        result = bootstrap_service.bootstrap(
+            arguments.project_id, arguments.handoff_id, arguments.request
+        )
+        print(f"Project ID: {result.project_id}", file=output)
+        print(f"Handoff ID: {result.handoff_id}", file=output)
+        print(f"Developer Run ID: {result.developer_run_id}", file=output)
+        print(f"Developer Status: {result.developer_status}", file=output)
+        print(f"Pending Action: {result.pending_action}", file=output)
+        return 0
+    if arguments.command == "handoffs":
+        listing = handoff_service.list_handoffs(arguments.project_id)
+        print(f"Project ID: {listing.project_id}", file=output)
+        print("Handoffs:", file=output)
+        if not listing.handoffs:
+            print("- none", file=output)
+        for view in listing.handoffs:
+            print(
+                f"- {view.handoff.handoff_id} | {view.handoff.artifact_id} | "
+                f"{view.handoff.purpose} | {view.status}",
                 file=output,
             )
         return 0

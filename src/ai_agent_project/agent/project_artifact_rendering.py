@@ -25,6 +25,19 @@ class ProjectArtifactRenderingError(ValueError):
     """Raised when an artifact does not support a requested rendering format."""
 
 
+def canonical_artifact_content_bytes(content: JsonValue) -> bytes:
+    """Hash input: content only, sorted compact JSON, UTF-8, no final newline.
+
+    Uses ensure_ascii=False and separators=(",", ":"). Lists and exact string
+    values (including generated-file whitespace/newlines) remain unchanged.
+    Descriptors/rendered Markdown are excluded. Generated files include their
+    whole stored artifact object, not just the text body. No content is archived.
+    """
+    return json.dumps(
+        content, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
 def supported_media_types(
     artifact_type: ProjectArtifactType,
 ) -> tuple[str, ...]:

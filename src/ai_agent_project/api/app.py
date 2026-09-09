@@ -63,7 +63,26 @@ from ai_agent_project.agent.project_artifact_rendering import (
     ProjectArtifactRenderingError,
     render_project_artifact,
 )
+from ai_agent_project.agent.project_developer_bootstrap_application import (
+    DeveloperBootstrapResult,
+    ProjectDeveloperBootstrapError,
+    ProjectDeveloperBootstrapService,
+)
 from ai_agent_project.agent.project_execution import ProjectExecutionService
+from ai_agent_project.agent.project_handoff import (
+    ProjectHandoff,
+    ProjectHandoffList,
+    ProjectHandoffSelection,
+)
+from ai_agent_project.agent.project_handoff_application import (
+    InMemoryProjectHandoffStore,
+    ProjectHandoffError,
+    ProjectHandoffService,
+)
+from ai_agent_project.agent.project_handoff_consumption import (
+    ProjectHandoffConsumptionError,
+    ProjectHandoffConsumptionService,
+)
 from ai_agent_project.agent.project_runner import ProjectRunner, UpgradeProjectRunner
 from ai_agent_project.agent.project_session_application import (
     DeveloperRunReader,
@@ -241,6 +260,31 @@ class BindProjectRunRequest(BaseModel):
     def reject_blank_run_id(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("run_id must not be blank")
+        return value
+
+
+class CreateProjectHandoffRequest(ProjectHandoffSelection):
+    """User-controlled artifact selection; authoritative provenance is derived."""
+
+    to: str = "developer"
+
+    @field_validator("to")
+    @classmethod
+    def validate_target(cls, value: str) -> str:
+        if value != "developer":
+            raise ValueError("Only the developer handoff target is supported")
+        return value
+
+
+class DeveloperBootstrapRequest(BaseModel):
+    handoff_id: str = Field(min_length=1)
+    request: str = Field(min_length=1)
+
+    @field_validator("handoff_id", "request")
+    @classmethod
+    def reject_blank_bootstrap_values(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("bootstrap values must not be blank")
         return value
 
 
@@ -430,6 +474,7 @@ def create_app(
     project_action_service: ProjectActionService | None = None,
     hybrid_coordination_service: HybridCoordinationService | None = None,
     research_application_service: ResearchApplicationService | None = None,
+    project_handoff_service: ProjectHandoffService | None = None,
 ) -> FastAPI:
     """Create the FastAPI app with injectable agent and default workspace root."""
     if agent_service is None:
@@ -479,6 +524,35 @@ def create_app(
             project_run_store,
             research_run_store,
         )
+    handoff_store = None
+    if project_handoff_service is None:
+        handoff_store = InMemoryProjectHandoffStore()
+        project_handoff_service = ProjectHandoffService(
+            project_session_service,
+            project_artifact_service,
+            handoff_store,
+            research_reader=research_run_store,
+        )
+    else:
+        handoff_store = getattr(project_handoff_service, "_store", None)
+
+    research_reader = (
+        research_run_store
+        or getattr(project_artifact_service, "_research_reader", None)
+        or getattr(project_handoff_service, "_research_reader", None)
+    )
+    project_developer_bootstrap_service = None
+    if handoff_store is not None and research_reader is not None:
+        project_developer_bootstrap_service = ProjectDeveloperBootstrapService(
+            project_session_service,
+            ProjectHandoffConsumptionService(
+                project_session_service,
+                project_artifact_service,
+                handoff_store,
+                research_reader,
+            ),
+            project_application_service,
+        )
 
     app = FastAPI(title="AI Agent Project")
     app.state.agent_service = agent_service
@@ -489,6 +563,8 @@ def create_app(
     app.state.project_action_service = project_action_service
     app.state.hybrid_coordination_service = hybrid_coordination_service
     app.state.research_application_service = research_application_service
+    app.state.project_handoff_service = project_handoff_service
+    app.state.project_developer_bootstrap_service = project_developer_bootstrap_service
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -507,6 +583,16 @@ def create_app(
         assert project_session_service is not None
         return project_session_service
 
+    def require_project_developer_bootstrap_service() -> (
+        ProjectDeveloperBootstrapService
+    ):
+        if project_developer_bootstrap_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Developer bootstrap is not configured.",
+            )
+        return project_developer_bootstrap_service
+
     def require_project_artifact_service() -> ProjectArtifactService:
         assert project_artifact_service is not None
         return project_artifact_service
@@ -518,6 +604,10 @@ def create_app(
     def require_hybrid_coordination_service() -> HybridCoordinationService:
         assert hybrid_coordination_service is not None
         return hybrid_coordination_service
+
+    def require_project_handoff_service() -> ProjectHandoffService:
+        assert project_handoff_service is not None
+        return project_handoff_service
 
     @app.post("/v1/projects", response_model=StoredProjectSession, status_code=201)
     def create_project_session(
@@ -669,6 +759,50 @@ def create_app(
         except ProjectArtifactRenderingError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except ProjectArtifactError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/handoffs",
+        response_model=ProjectHandoff,
+        status_code=201,
+    )
+    def create_project_handoff(
+        project_id: str, request: CreateProjectHandoffRequest
+    ) -> ProjectHandoff:
+        try:
+            return require_project_handoff_service().register(
+                project_id, request.artifact_id, request.purpose
+            )
+        except ProjectHandoffError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get(
+        "/v1/projects/{project_id}/handoffs",
+        response_model=ProjectHandoffList,
+    )
+    def list_project_handoffs(project_id: str) -> ProjectHandoffList:
+        try:
+            return require_project_handoff_service().list_handoffs(project_id)
+        except ProjectHandoffError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post(
+        "/v1/projects/{project_id}/developer-bootstrap",
+        response_model=DeveloperBootstrapResult,
+        status_code=201,
+    )
+    def bootstrap_developer(
+        project_id: str, request: DeveloperBootstrapRequest
+    ) -> DeveloperBootstrapResult:
+        try:
+            return require_project_developer_bootstrap_service().bootstrap(
+                project_id, request.handoff_id, request.request
+            )
+        except ProjectSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ProjectDeveloperBootstrapError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ProjectHandoffConsumptionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.post(

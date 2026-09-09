@@ -1,5 +1,6 @@
 """Atomic persistence for shallow project-session orchestration state."""
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ from ai_agent_project.agent.project_session_application import (
     ProjectSessionAlreadyExistsError,
     ProjectSessionError,
     ProjectSessionNotFoundError,
+    _bind_developer_project,
 )
 
 
@@ -51,6 +53,34 @@ class FileProjectStore:
         self._write(
             path, {"project_id": project_id, "project": project.model_dump(mode="json")}
         )
+
+    def bind_developer_run_if_unbound(
+        self, project_id: str, developer_run_id: str
+    ) -> ProjectSession:
+        path = self._path_for(project_id)
+        try:
+            # Keep this inode stable: JSON snapshots are replaced atomically.
+            # Closing releases the lock; never unlink a lock another caller may use.
+            with path.with_suffix(".lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                project = self.get(project_id)
+                if project is None:
+                    raise ProjectSessionNotFoundError(
+                        f"Project not found: {project_id}"
+                    )
+                updated = _bind_developer_project(project, developer_run_id)
+                self._write(
+                    path,
+                    {
+                        "project_id": project_id,
+                        "project": updated.model_dump(mode="json"),
+                    },
+                )
+                return updated
+        except OSError as error:
+            raise ProjectSessionStorageError(
+                f"Could not bind Developer run for project: {project_id}"
+            ) from error
 
     def _path_for(self, project_id: str) -> Path:
         try:

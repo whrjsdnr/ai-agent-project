@@ -6,6 +6,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict
 
 from ai_agent_project.agent.checkpoint import CheckpointDecision
+from ai_agent_project.agent.developer_bootstrap_context import DeveloperBootstrapContext
 from ai_agent_project.agent.plan_revision import (
     PlanReviewStatus,
     PlanRevisionState,
@@ -16,6 +17,7 @@ from ai_agent_project.agent.project_execution import (
     ProjectExecutionState,
     ProjectExecutionStatus,
 )
+from ai_agent_project.agent.project_handoff import ResearchBootstrapProvenance
 from ai_agent_project.agent.project_runner import (
     ProjectRun,
     ProjectRunner,
@@ -54,6 +56,10 @@ class ProjectRunStore(Protocol):
         """Replace an existing project run with a whole immutable snapshot."""
         ...
 
+    def delete(self, project_run_id: str) -> None:
+        """Delete one exact run for orchestration rollback."""
+        ...
+
 
 class InMemoryProjectRunStore:
     """Small process-local ProjectRun store with explicit replacement semantics."""
@@ -75,6 +81,11 @@ class InMemoryProjectRunStore:
         if project_run_id not in self._project_runs:
             raise ProjectRunNotFoundError(f"Project run not found: {project_run_id}")
         self._project_runs[project_run_id] = project_run
+
+    def delete(self, project_run_id: str) -> None:
+        if project_run_id not in self._project_runs:
+            raise ProjectRunNotFoundError(f"Project run not found: {project_run_id}")
+        del self._project_runs[project_run_id]
 
 
 class StoredProjectRun(BaseModel):
@@ -119,6 +130,30 @@ class ProjectApplicationService:
         project_run_id = str(uuid4())
         self._store.create(project_run_id, project_run)
         return StoredProjectRun(id=project_run_id, project_run=project_run)
+
+    def create_project_with_context(
+        self,
+        source_text: str,
+        *,
+        context: DeveloperBootstrapContext,
+        provenance: ResearchBootstrapProvenance,
+        project_title: str | None = None,
+        source_format: str | None = None,
+    ) -> StoredProjectRun:
+        """Create one planning-only run with trusted bootstrap provenance."""
+        project_run = self._project_runner.start(
+            source_text,
+            project_title=project_title,
+            source_format=source_format,
+            context=context,
+        ).model_copy(update={"research_bootstrap": provenance})
+        project_run_id = str(uuid4())
+        self._store.create(project_run_id, project_run)
+        return StoredProjectRun(id=project_run_id, project_run=project_run)
+
+    def delete_project_run(self, project_run_id: str) -> None:
+        """Remove one newly-created run for orchestration rollback."""
+        self._store.delete(project_run_id)
 
     def create_upgrade_project(
         self, request_text: str, *, project_title: str | None = None

@@ -335,3 +335,39 @@ def test_project_session_surface_has_no_execution_calls(relative_path: str) -> N
         if isinstance(node, ast.Call) and (name := _call_name(node.func)) is not None
     }
     assert not calls & prohibited
+
+
+@pytest.mark.parametrize("file_backed", [False, True], ids=["memory", "file"])
+def test_conditional_developer_bind_has_one_winner(tmp_path, file_backed) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    shared_store = InMemoryProjectSessionStore()
+    store = FileProjectStore(tmp_path) if file_backed else shared_store
+    service = _service(store)
+    pending = service.create_project_request("Test conditional binding")
+    original = service.confirm_project_mode(
+        pending.id, WorkMode.HYBRID, ProjectMode.NEW
+    ).project
+    ready = Barrier(2)
+
+    def bind(run_id: str):
+        contender = FileProjectStore(tmp_path) if file_backed else shared_store
+        ready.wait(timeout=10)
+        try:
+            return contender.bind_developer_run_if_unbound(pending.id, run_id)
+        except ProjectSessionStateError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(bind, ("run-a", "run-b")))
+    winners = [result for result in results if result is not None]
+    assert len(winners) == 1
+    winner = winners[0]
+    assert store.get(pending.id) == winner
+    assert winner.model_dump(
+        exclude={"developer_run_id", "updated_at"}
+    ) == original.model_dump(exclude={"developer_run_id", "updated_at"})
+    with pytest.raises(ProjectSessionStateError, match="already"):
+        store.bind_developer_run_if_unbound(pending.id, "run-c")
+    assert store.get(pending.id) == winner

@@ -77,6 +77,20 @@ class FileProjectRunStore:
             },
         )
 
+    def delete(self, project_run_id: str) -> None:
+        """Delete one exact run snapshot for bootstrap rollback."""
+        path = self._path_for(project_run_id)
+        try:
+            path.unlink()
+        except FileNotFoundError as error:
+            raise ProjectRunNotFoundError(
+                f"Project run not found: {project_run_id}"
+            ) from error
+        except OSError as error:
+            raise ProjectRunStorageError(
+                f"Could not delete project run snapshot: {project_run_id}"
+            ) from error
+
     def workspace_root_for(self, project_run_id: str) -> Path:
         """Return the saved absolute workspace root for one persisted run."""
         path = self._path_for(project_run_id)

@@ -19,6 +19,7 @@ from ai_agent_project.agent.checkpoint import (
 )
 from ai_agent_project.agent.phase_execution import (
     PhaseExecutionResult,
+    PhaseExecutionService,
     PhaseExecutionStatus,
 )
 from ai_agent_project.agent.plan import ImplementationPlan
@@ -459,3 +460,179 @@ def test_status_json_is_machine_readable(tmp_path) -> None:
     )
     assert '"id": "' in output.getvalue()
     assert '"workspace": "' in output.getvalue()
+
+
+def test_bootstrap_developer_production_builder_persists_cwd_workspace(
+    tmp_path, monkeypatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from ai_agent_project import cli
+    from ai_agent_project.agent.project_artifact_application import (
+        ProjectArtifactService,
+    )
+    from ai_agent_project.agent.project_handoff import ProjectHandoffPurpose
+    from ai_agent_project.agent.project_handoff_application import ProjectHandoffService
+    from ai_agent_project.agent.project_handoff_file_store import (
+        FileProjectHandoffStore,
+    )
+    from ai_agent_project.agent.project_session import (
+        ProjectModeProposal,
+        ProjectPendingActionType,
+        ProjectSession,
+        ProjectStatus,
+    )
+    from ai_agent_project.agent.project_session_application import ProjectSessionService
+    from ai_agent_project.agent.project_session_file_store import FileProjectStore
+    from ai_agent_project.agent.research import WorkMode
+    from ai_agent_project.agent.research_file_store import FileResearchRunStore
+    from ai_agent_project.agent.upgrade import ProjectMode
+    from ai_agent_project.llm.providers.openai_planner import (
+        OpenAIImplementationPlanner,
+    )
+    from ai_agent_project.llm.providers.openai_project_planner import (
+        OpenAIProjectPlanner,
+    )
+    from ai_agent_project.llm.providers.openai_specification import (
+        OpenAISpecificationParser,
+    )
+
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "agent"))
+    from test_research_implementation import (
+        _approved_run,
+        _implementation_plan,
+    )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "sentinel.txt").write_text("unchanged\n", encoding="utf-8")
+    research = FileResearchRunStore(tmp_path / "research")
+    projects = FileProjectStore(tmp_path / "projects")
+    research_id, project_id = str(uuid4()), str(uuid4())
+    research.create(
+        research_id,
+        _approved_run().model_copy(
+            update={"implementation_plan": _implementation_plan()}
+        ),
+    )
+    now = datetime.now(UTC)
+    projects.create(
+        project_id,
+        ProjectSession(
+            project_id=project_id,
+            title="Workspace regression",
+            original_request="Implement research",
+            status=ProjectStatus.ACTIVE,
+            mode_proposal=ProjectModeProposal(
+                proposed_work_mode=WorkMode.HYBRID,
+                proposed_project_mode=ProjectMode.NEW,
+                rationale="Test fixture",
+            ),
+            work_mode=WorkMode.HYBRID,
+            project_mode=ProjectMode.NEW,
+            research_run_id=research_id,
+            created_at=now,
+            updated_at=now,
+        ),
+    )
+    sessions = ProjectSessionService(projects, research_run_reader=research)
+    artifacts = ProjectArtifactService(sessions, None, research)
+    selected = next(
+        item
+        for item in artifacts.list_artifacts(project_id).artifacts
+        if item.artifact_type.value == "research_implementation_plan"
+    )
+    handoffs = FileProjectHandoffStore(tmp_path / "projects" / "handoffs")
+    handoff = ProjectHandoffService(sessions, artifacts, handoffs, research).register(
+        project_id,
+        selected.artifact_id,
+        ProjectHandoffPurpose.DEVELOPER_BOOTSTRAP_CONTEXT,
+    )
+    ids = {"cli_project": project_id, "cli_handoff": handoff.handoff_id}
+    # The CLI has no workspace option here: normal Developer cwd semantics apply.
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(
+        cli, "default_project_run_store_root", lambda: tmp_path / "developer"
+    )
+    monkeypatch.setattr(
+        cli, "default_research_run_store_root", lambda: tmp_path / "research"
+    )
+    fixture = make_project_run()
+    provider_calls: list[str] = []
+
+    def parse(self, source_text, *, context=None):
+        assert context is not None
+        provider_calls.append("specification")
+        return fixture.specification
+
+    def implementation(self, specification, inspected_workspace):
+        assert inspected_workspace.files == ["sentinel.txt"]
+        provider_calls.append("implementation")
+        return fixture.implementation_plan
+
+    def project(self, specification, implementation_plan, inspected_workspace):
+        assert inspected_workspace.files == ["sentinel.txt"]
+        provider_calls.append("project")
+        return fixture.project_plan
+
+    def forbid_execution(*args, **kwargs):
+        raise AssertionError("Bootstrap must not execute a Developer phase")
+
+    monkeypatch.setattr(PhaseExecutionService, "execute", forbid_execution)
+    monkeypatch.setattr(OpenAISpecificationParser, "parse", parse)
+    monkeypatch.setattr(OpenAIImplementationPlanner, "plan", implementation)
+    monkeypatch.setattr(OpenAIProjectPlanner, "plan", project)
+
+    def snapshot(root: Path) -> dict[str, bytes]:
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+    before = {
+        name: snapshot(tmp_path / name)
+        for name in ("workspace", "research", "projects/handoffs")
+    }
+    output, errors = StringIO(), StringIO()
+    args = [
+        "project-session",
+        "--store-root",
+        str(tmp_path / "projects"),
+        "bootstrap-developer",
+        ids["cli_project"],
+        ids["cli_handoff"],
+        "--request",
+        "Implement the selected research task",
+    ]
+    assert run_cli(args, stdout=output, stderr=errors) == 0, errors.getvalue()
+    assert provider_calls == ["specification", "implementation", "project"]
+    projects = FileProjectStore(tmp_path / "projects")
+    developers = FileProjectRunStore(tmp_path / "developer")
+    session = projects.get(ids["cli_project"])
+    assert session is not None and session.developer_run_id is not None
+    run_id = session.developer_run_id
+    assert developers.workspace_root_for(run_id) == workspace.resolve()
+    run = developers.get(run_id)
+    assert run is not None
+    assert run.execution_state.status is ProjectExecutionStatus.AWAITING_PLAN_APPROVAL
+    assert run.plan_revision_state.status.value == "awaiting_approval"
+    assert run.execution_state.completed_phase_ids == ()
+    assert all(
+        record.attempt_count == 0 and record.execution is None
+        for record in run.execution_state.phase_records
+    )
+    sessions = ProjectSessionService(
+        projects, developer_run_reader=developers, research_run_reader=research
+    )
+    assert ProjectPendingActionType.APPROVE_DEVELOPER_PLAN in {
+        action.action_type
+        for action in sessions.get_pending_actions(ids["cli_project"])
+    }
+    assert before == {name: snapshot(tmp_path / name) for name in before}
+    assert "Pending Action: approve_developer_plan" in output.getvalue()
+    assert run_cli(args, stdout=StringIO(), stderr=StringIO()) != 0
+    assert provider_calls == ["specification", "implementation", "project"]
+    assert len(list((tmp_path / "developer").glob("*.json"))) == 1
+    assert projects.get(ids["cli_project"]).developer_run_id == run_id

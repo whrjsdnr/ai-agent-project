@@ -1,6 +1,7 @@
 """Application lifecycle for shallow user-confirmed project sessions."""
 
 from datetime import UTC, datetime
+from threading import Lock
 from typing import Protocol
 from uuid import uuid4
 
@@ -43,6 +44,29 @@ class ProjectSessionStore(Protocol):
 
     def replace(self, project_id: str, project: ProjectSession) -> None: ...
 
+    def bind_developer_run_if_unbound(
+        self, project_id: str, developer_run_id: str
+    ) -> ProjectSession: ...
+
+
+def _bind_developer_project(
+    project: ProjectSession, developer_run_id: str
+) -> ProjectSession:
+    """Validate the freshly loaded session inside the store's critical section."""
+    if project.status is not ProjectStatus.ACTIVE:
+        raise ProjectSessionStateError("Project must be active")
+    if project.work_mode is not WorkMode.HYBRID:
+        raise ProjectSessionStateError(
+            "Only Hybrid projects can use Developer bootstrap"
+        )
+    if project.project_mode is not ProjectMode.NEW:
+        raise ProjectSessionStateError("Only NEW projects can use Developer bootstrap")
+    if project.developer_run_id is not None:
+        raise ProjectSessionStateError("Project already has a Developer run bound")
+    return project.model_copy(
+        update={"developer_run_id": developer_run_id, "updated_at": datetime.now(UTC)}
+    )
+
 
 class DeveloperRunReader(Protocol):
     def get(self, run_id: str) -> ProjectRun | None: ...
@@ -55,6 +79,7 @@ class ResearchRunReader(Protocol):
 class InMemoryProjectSessionStore:
     def __init__(self) -> None:
         self._projects: dict[str, ProjectSession] = {}
+        self._bind_lock = Lock()
 
     def create(self, project_id: str, project: ProjectSession) -> None:
         if project_id in self._projects:
@@ -70,6 +95,17 @@ class InMemoryProjectSessionStore:
         if project_id not in self._projects:
             raise ProjectSessionNotFoundError(f"Project not found: {project_id}")
         self._projects[project_id] = project
+
+    def bind_developer_run_if_unbound(
+        self, project_id: str, developer_run_id: str
+    ) -> ProjectSession:
+        with self._bind_lock:
+            project = self.get(project_id)
+            if project is None:
+                raise ProjectSessionNotFoundError(f"Project not found: {project_id}")
+            updated = _bind_developer_project(project, developer_run_id)
+            self._projects[project_id] = updated
+            return updated
 
 
 class StoredProjectSession(BaseModel):
@@ -154,6 +190,15 @@ class ProjectSessionService:
                 "Researcher project cannot bind a developer run"
             )
         return self._replace(project_id, project, developer_run_id=developer_run_id)
+
+    def bind_developer_run_if_unbound(
+        self, project_id: str, developer_run_id: str
+    ) -> StoredProjectSession:
+        """Bind a NEW Hybrid project only when its Developer lane is unbound."""
+        project = self._store.bind_developer_run_if_unbound(
+            project_id, developer_run_id
+        )
+        return StoredProjectSession(id=project_id, project=project)
 
     def bind_research_run(
         self, project_id: str, research_run_id: str
