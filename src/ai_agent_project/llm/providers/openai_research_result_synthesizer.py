@@ -1,7 +1,6 @@
 """Strict, interpretation-only OpenAI provider for post-result synthesis."""
 
 import json
-import os
 
 from pydantic import ValidationError
 
@@ -14,29 +13,37 @@ from ai_agent_project.agent.research import (
     ResearchSynthesisPayload,
 )
 from ai_agent_project.agent.research_planning import ResearchResultSynthesizer
-from ai_agent_project.llm.providers.openai import DEFAULT_MODEL, OpenAIAPIClient
+from ai_agent_project.llm.config import ProviderConfig
+from ai_agent_project.llm.providers.openai import OpenAIAPIClient
 from ai_agent_project.llm.providers.structured_schema import openai_strict_json_schema
+from ai_agent_project.llm.runtime import ConfiguredOpenAIProvider
 
 
 class ResearchResultSynthesisError(ValueError):
     pass
 
 
-class OpenAIResearchResultSynthesizer(ResearchResultSynthesizer):
+class OpenAIResearchResultSynthesizer(
+    ConfiguredOpenAIProvider, ResearchResultSynthesizer
+):
     def __init__(
         self,
         *,
+        config: ProviderConfig | None = None,
         api_key: str | None = None,
         model: str | None = None,
         client: OpenAIAPIClient | None = None,
-        request_timeout_seconds: float = 90.0,
+        request_timeout_seconds: float | None = None,
     ) -> None:
-        if request_timeout_seconds <= 0:
+        if request_timeout_seconds is not None and request_timeout_seconds <= 0:
             raise ValueError("Research synthesis timeout must be positive")
-        self._api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self._model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
-        self._client = client
-        self._request_timeout_seconds = request_timeout_seconds
+        self._configure(
+            config=config,
+            api_key=api_key,
+            model=model,
+            client=client,
+            timeout_seconds=request_timeout_seconds,
+        )
 
     def synthesize(
         self,
@@ -121,15 +128,3 @@ class OpenAIResearchResultSynthesizer(ResearchResultSynthesizer):
             raise ResearchResultSynthesisError(
                 "OpenAI synthesis provider returned invalid output"
             ) from error
-
-    def _get_client(self) -> OpenAIAPIClient:
-        if self._client is not None:
-            return self._client
-        if not self._api_key:
-            raise ValueError("OPENAI_API_KEY must be configured")
-        from openai import OpenAI
-
-        self._client = OpenAI(
-            api_key=self._api_key, timeout=self._request_timeout_seconds
-        )
-        return self._client

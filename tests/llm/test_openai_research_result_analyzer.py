@@ -20,6 +20,7 @@ from ai_agent_project.llm.providers.openai_research_result_analyzer import (
     OpenAIResearchResultAnalyzer,
     ResearchResultAnalysisError,
 )
+from ai_agent_project.llm.runtime import ProviderRequestError
 
 
 class _Responses:
@@ -123,9 +124,9 @@ def test_analyzer_rejects_malformed_output(result: object) -> None:
         )
 
 
-def test_analyzer_propagates_provider_failure_and_requires_positive_timeout() -> None:
+def test_analyzer_sanitizes_provider_failure_and_requires_positive_timeout() -> None:
     plan, implementation, submission = _context()
-    with pytest.raises(RuntimeError, match="down"):
+    with pytest.raises(ProviderRequestError, match="LLM provider request failed"):
         OpenAIResearchResultAnalyzer(
             client=_Client(RuntimeError("down")), model="test"
         ).analyze(plan, implementation, submission)

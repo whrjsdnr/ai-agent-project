@@ -114,6 +114,7 @@ from ai_agent_project.agent.state import AgentState, AgentStatus
 from ai_agent_project.agent.upgrade import ProjectMode, UpgradeContext
 from ai_agent_project.agent.workspace import FilesystemWorkspaceInspector
 from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
+from ai_agent_project.llm.config import ProviderConfig, ProviderConfigService
 from ai_agent_project.llm.providers.openai import OpenAIClient
 from ai_agent_project.llm.providers.openai_codebase_analyzer import (
     OpenAICodebaseAnalyzer,
@@ -352,27 +353,35 @@ def _default_workspace_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def create_default_agent_service(workspace_root: Path | None = None) -> AgentService:
+def create_default_agent_service(
+    workspace_root: Path | None = None, *, provider_config: ProviderConfig | None = None
+) -> AgentService:
     """Build the default agent with OpenAI and workspace-scoped development tools."""
+    provider_config = ProviderConfigService().resolve(provider_config)
     registry = ToolRegistry()
     resolved_workspace_root = workspace_root or _default_workspace_root()
     registry.register(CalculatorTool())
     registry.register(FileTool(resolved_workspace_root))
     registry.register(ShellTool(resolved_workspace_root))
-    return AgentService(OpenAIClient(), registry)
+    return AgentService(OpenAIClient(config=provider_config), registry)
 
 
 def create_default_coding_agent_service(
     workspace_root: Path | None = None,
     *,
+    provider_config: ProviderConfig | None = None,
     agent_service: AgentService | None = None,
     acceptance_validator: AcceptanceValidator | None = None,
 ) -> CodingAgentService:
     """Compose OpenAI parsing/planning with the generic default coding agent."""
+    provider_config = ProviderConfigService().resolve(provider_config)
     return CodingAgentService(
-        specification_parser=OpenAISpecificationParser(),
-        planner=OpenAIImplementationPlanner(),
-        agent_service=agent_service or create_default_agent_service(workspace_root),
+        specification_parser=OpenAISpecificationParser(config=provider_config),
+        planner=OpenAIImplementationPlanner(config=provider_config),
+        agent_service=agent_service
+        or create_default_agent_service(
+            workspace_root, provider_config=provider_config
+        ),
         acceptance_validator=acceptance_validator
         or WorkspaceAcceptanceValidator(workspace_root or _default_workspace_root()),
         workspace_inspector=FilesystemWorkspaceInspector(
@@ -384,13 +393,18 @@ def create_default_coding_agent_service(
 def create_default_project_application_service(
     workspace_root: Path | None = None,
     *,
+    provider_config: ProviderConfig | None = None,
     agent_service: AgentService | None = None,
     store: ProjectRunStore | None = None,
 ) -> ProjectApplicationService:
     """Compose production planning and lifecycle services with an injected store."""
+    provider_config = ProviderConfigService().resolve(provider_config)
     resolved_workspace_root = workspace_root or _default_workspace_root()
     phase_execution_service = PhaseExecutionService(
-        agent_service or create_default_agent_service(resolved_workspace_root),
+        agent_service
+        or create_default_agent_service(
+            resolved_workspace_root, provider_config=provider_config
+        ),
         WorkspaceAcceptanceValidator(resolved_workspace_root),
     )
     project_execution_service = ProjectExecutionService(
@@ -399,39 +413,41 @@ def create_default_project_application_service(
         PhaseCheckpointService(),
     )
     project_runner = ProjectRunner(
-        OpenAISpecificationParser(),
+        OpenAISpecificationParser(config=provider_config),
         FilesystemWorkspaceInspector(resolved_workspace_root),
-        OpenAIImplementationPlanner(),
-        OpenAIProjectPlanner(),
+        OpenAIImplementationPlanner(config=provider_config),
+        OpenAIProjectPlanner(config=provider_config),
         project_execution_service,
     )
     upgrade_runner = UpgradeProjectRunner(
         FilesystemWorkspaceInspector(resolved_workspace_root),
-        OpenAICodebaseAnalyzer(),
-        OpenAIUpgradeAnalyzer(),
-        OpenAIImplementationPlanner(),
-        OpenAIProjectPlanner(),
+        OpenAICodebaseAnalyzer(config=provider_config),
+        OpenAIUpgradeAnalyzer(config=provider_config),
+        OpenAIImplementationPlanner(config=provider_config),
+        OpenAIProjectPlanner(config=provider_config),
         project_execution_service,
     )
     return ProjectApplicationService(
         project_runner,
         project_execution_service,
         store if store is not None else InMemoryProjectRunStore(),
-        OpenAIProjectPlanReviser(),
+        OpenAIProjectPlanReviser(config=provider_config),
         upgrade_runner,
     )
 
 
 def create_default_project_session_service(
     *,
+    provider_config: ProviderConfig | None = None,
     store: ProjectSessionStore | None = None,
     developer_run_reader: DeveloperRunReader | None = None,
     research_run_reader: ResearchRunReader | None = None,
 ) -> ProjectSessionService:
     """Compose proposal-only project-session orchestration."""
+    provider_config = ProviderConfigService().resolve(provider_config)
     return ProjectSessionService(
         store if store is not None else InMemoryProjectSessionStore(),
-        OpenAIProjectModeProposer(),
+        OpenAIProjectModeProposer(config=provider_config),
         developer_run_reader,
         research_run_reader,
     )
@@ -440,26 +456,28 @@ def create_default_project_session_service(
 def create_default_research_application_service(
     workspace_root: Path | None = None,
     *,
+    provider_config: ProviderConfig | None = None,
     store: InMemoryResearchRunStore | FileResearchRunStore | None = None,
 ) -> ResearchApplicationService:
     """Compose real OpenAI planning, retrieval, and synthesis without fallback."""
+    provider_config = ProviderConfigService().resolve(provider_config)
     resolved_workspace_root = workspace_root or _default_workspace_root()
     discovery = ResearchDiscoveryService(
-        OpenAIResearchQuestionPlanner(),
-        OpenAIWebResearchSourceProvider(),
-        OpenAIResearchEvidenceExtractor(),
-        OpenAIResearchDiscoverySynthesizer(),
+        OpenAIResearchQuestionPlanner(config=provider_config),
+        OpenAIWebResearchSourceProvider(config=provider_config),
+        OpenAIResearchEvidenceExtractor(config=provider_config),
+        OpenAIResearchDiscoverySynthesizer(config=provider_config),
         FilesystemWorkspaceInspector(resolved_workspace_root),
     )
     return ResearchApplicationService(
         discovery,
         store if store is not None else InMemoryResearchRunStore(),
-        OpenAIResearchPlanGenerator(),
-        OpenAIResearchImplementationPlanner(),
-        OpenAIResearchImplementationGenerator(),
-        OpenAIResearchResultAnalyzer(),
-        OpenAIResearchResultSynthesizer(),
-        OpenAIResearchPaperMaterialsGenerator(),
+        OpenAIResearchPlanGenerator(config=provider_config),
+        OpenAIResearchImplementationPlanner(config=provider_config),
+        OpenAIResearchImplementationGenerator(config=provider_config),
+        OpenAIResearchResultAnalyzer(config=provider_config),
+        OpenAIResearchResultSynthesizer(config=provider_config),
+        OpenAIResearchPaperMaterialsGenerator(config=provider_config),
     )
 
 
@@ -475,15 +493,21 @@ def create_app(
     hybrid_coordination_service: HybridCoordinationService | None = None,
     research_application_service: ResearchApplicationService | None = None,
     project_handoff_service: ProjectHandoffService | None = None,
+    *,
+    provider_config: ProviderConfig | None = None,
 ) -> FastAPI:
     """Create the FastAPI app with injectable agent and default workspace root."""
+    provider_config = ProviderConfigService().resolve(provider_config)
     if agent_service is None:
-        agent_service = create_default_agent_service(workspace_root)
+        agent_service = create_default_agent_service(
+            workspace_root, provider_config=provider_config
+        )
     if coding_agent_service is None:
         coding_agent_service = create_default_coding_agent_service(
             workspace_root,
             agent_service=agent_service,
             acceptance_validator=acceptance_validator,
+            provider_config=provider_config,
         )
     if project_application_service is None:
         project_run_store = InMemoryProjectRunStore()
@@ -491,13 +515,14 @@ def create_app(
             workspace_root,
             agent_service=agent_service,
             store=project_run_store,
+            provider_config=provider_config,
         )
     else:
         project_run_store = None
     if research_application_service is None:
         research_run_store = InMemoryResearchRunStore()
         research_application_service = create_default_research_application_service(
-            workspace_root, store=research_run_store
+            workspace_root, store=research_run_store, provider_config=provider_config
         )
     else:
         research_run_store = None
@@ -505,6 +530,7 @@ def create_app(
         project_session_service = create_default_project_session_service(
             developer_run_reader=project_run_store,
             research_run_reader=research_run_store,
+            provider_config=provider_config,
         )
     if project_artifact_service is None:
         project_artifact_service = ProjectArtifactService(

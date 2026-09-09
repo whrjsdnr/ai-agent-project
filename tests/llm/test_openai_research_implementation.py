@@ -31,6 +31,7 @@ from ai_agent_project.llm.providers.openai_research_implementation import (
     OpenAIResearchImplementationPlanner,
     ResearchImplementationGenerationError,
 )
+from ai_agent_project.llm.runtime import ProviderRequestError
 
 
 class _Responses:
@@ -216,9 +217,8 @@ def test_implementation_generator_composes_authoritative_plan_from_payload() -> 
     request, direction, approved, report = _context()
     plan = _implementation_plan()
     payload = _package_payload()
-    provider = OpenAIResearchImplementationGenerator(
-        client=_Client(SimpleNamespace(output_text=json.dumps(payload))), model="test"
-    )
+    client = _Client(SimpleNamespace(output_text=json.dumps(payload)))
+    provider = OpenAIResearchImplementationGenerator(client=client, model="test")
 
     package = provider.generate(request, direction, approved, plan, report)
 
@@ -226,7 +226,7 @@ def test_implementation_generator_composes_authoritative_plan_from_payload() -> 
     assert package.artifacts[0].artifact_id == "ART-1"
     assert package.artifacts[0].objective_ids == ("OBJ-1",)
     assert package.generated_not_executed is True
-    schema = provider._client.responses.requests[0]["text"]["format"]["schema"]
+    schema = client.responses.requests[0]["text"]["format"]["schema"]
     assert "implementation_plan" not in schema["properties"]
 
 
@@ -249,13 +249,13 @@ def test_implementation_generator_rejects_invalid_artifact_payload(mutate) -> No
         provider.generate(request, direction, approved, plan, report)
 
 
-def test_implementation_generator_propagates_provider_failure() -> None:
+def test_implementation_generator_sanitizes_provider_failure() -> None:
     request, direction, approved, report = _context()
     plan = _implementation_plan()
     failure = OpenAIResearchImplementationGenerator(
         client=_Client(RuntimeError("down")), model="test"
     )
-    with pytest.raises(RuntimeError, match="down"):
+    with pytest.raises(ProviderRequestError, match="LLM provider request failed"):
         failure.generate(request, direction, approved, plan, report)
 
 

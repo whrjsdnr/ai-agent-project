@@ -1,14 +1,15 @@
 """OpenAI structured-output analysis of a safe workspace inventory."""
 
 import json
-import os
 
 from pydantic import ValidationError
 
 from ai_agent_project.agent.codebase_analysis import CodebaseAnalysis, CodebaseAnalyzer
 from ai_agent_project.agent.workspace import WorkspaceSnapshot
-from ai_agent_project.llm.providers.openai import DEFAULT_MODEL, OpenAIAPIClient
+from ai_agent_project.llm.config import ProviderConfig
+from ai_agent_project.llm.providers.openai import OpenAIAPIClient
 from ai_agent_project.llm.providers.structured_schema import openai_strict_json_schema
+from ai_agent_project.llm.runtime import ConfiguredOpenAIProvider
 
 CODEBASE_ANALYZER_INSTRUCTIONS = """Analyze only the workspace-relative file list
 provided. Identify likely framework, structure, tests, dependencies, current features,
@@ -20,17 +21,23 @@ class CodebaseAnalysisError(ValueError):
     """Raised when an OpenAI response cannot become CodebaseAnalysis."""
 
 
-class OpenAICodebaseAnalyzer(CodebaseAnalyzer):
+class OpenAICodebaseAnalyzer(ConfiguredOpenAIProvider, CodebaseAnalyzer):
     def __init__(
         self,
         *,
+        config: ProviderConfig | None = None,
+        request_timeout_seconds: float | None = None,
         api_key: str | None = None,
         model: str | None = None,
         client: OpenAIAPIClient | None = None,
     ) -> None:
-        self._model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
-        self._client = client
-        self._api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self._configure(
+            config=config,
+            api_key=api_key,
+            model=model,
+            client=client,
+            timeout_seconds=request_timeout_seconds,
+        )
 
     def analyze(self, workspace: WorkspaceSnapshot) -> CodebaseAnalysis:
         response = self._get_client().responses.create(
@@ -72,13 +79,3 @@ class OpenAICodebaseAnalyzer(CodebaseAnalyzer):
                 "OpenAI analysis references files outside workspace snapshot"
             )
         return analysis
-
-    def _get_client(self) -> OpenAIAPIClient:
-        if self._client is not None:
-            return self._client
-        if not self._api_key:
-            raise ValueError("OPENAI_API_KEY must be configured")
-        from openai import OpenAI
-
-        self._client = OpenAI(api_key=self._api_key)
-        return self._client

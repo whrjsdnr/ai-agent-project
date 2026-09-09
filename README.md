@@ -162,7 +162,7 @@ export OPENAI_API_KEY="your-api-key"
 현재 shell에서 확인:
 
 ```bash
-echo $OPENAI_API_KEY
+test -n "$OPENAI_API_KEY" && echo "API key configured"
 ```
 
 보안을 위해 API Key를 코드나 Git 저장소에 직접 저장하지 않는 것을 권장합니다.
@@ -172,6 +172,51 @@ echo $OPENAI_API_KEY
 ```gitignore
 .env
 ```
+
+---
+
+# User LLM Provider Configuration (Phase 6A)
+
+설정 서비스는 Desktop UI와 독립적입니다. CLI에서도 동일한 서비스를 사용합니다.
+
+```bash
+uv run ai-agent config llm set --base-url https://api.openai.com/v1 --model gpt-5-mini --timeout-seconds 90
+uv run ai-agent config llm show
+uv run ai-agent config llm test
+```
+
+`test`만 실제 provider 요청을 수행합니다. `show`와 `set`은 네트워크를 사용하지 않습니다.
+Custom endpoint는 `--base-url http://localhost:8000/v1 --model my-model`처럼 설정합니다.
+잘못된 URL, 모델 또는 provider 응답에 대해 OpenAI나 다른 모델로 fallback하지 않습니다.
+
+- 기본 설정 파일: `$XDG_CONFIG_HOME/ai-agent/llm.json` (절대 경로인 경우), 아니면 `~/.config/ai-agent/llm.json`.
+- 별도 파일로 CLI 설정을 검사하려면 `config llm --config-file PATH show|set|test`를 사용합니다. Workflow는 기본 사용자 설정 경로를 사용합니다.
+- 필드별 우선순위: 명시적으로 지정한 runtime 필드 > 저장된 필드 > 환경변수 > 기본값. 기존 constructor의 `model`, `api_key`, `request_timeout_seconds` 인자는 runtime override입니다.
+- 환경변수: `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_TIMEOUT_SECONDS`, `OPENAI_API_KEY`. 기본값은 OpenAI `/v1`, `gpt-5-mini`, timeout 90초입니다.
+- API key는 runtime 인자 또는 `OPENAI_API_KEY`에서만 읽습니다. 일반 JSON에 저장하지 않으며 repr/공개 serialization에서도 제외합니다. CLI에는 key 인자를 두지 않습니다.
+- 저장은 현재 유효한 비밀정보 제외 설정 전체를 기록합니다. 따라서 저장 후에는 해당 필드들이 환경변수보다 우선합니다.
+- 기존과 같이 `.env`는 애플리케이션이 직접 읽지 않습니다. 필요하면 launcher에서 환경으로 전달합니다 (`uv run --env-file .env ai-agent ...`).
+- URL에는 인증정보, query 또는 fragment를 넣지 않습니다. 인증은 API key header로만 전달합니다.
+- 요청 실패는 원문 오류/응답 body 없이 안전한 오류로 전달하며 자동 재시도는 하지 않습니다.
+
+Python UI/호출자는 `ProviderConfigService().save(config)`, `.resolve(config)`, `.test_connection(config)`를 사용할 수 있습니다.
+`ProviderConfig(api_key=..., base_url=..., model=..., timeout_seconds=...)`를 기존 provider의 `config=` 또는
+`create_default_*_service(..., provider_config=config)`에 전달할 수도 있습니다. 설정 변경은 새로 구성하는 서비스에 적용됩니다.
+
+Developer, Researcher와 Hybrid는 모두 동일한 설정 경로를 사용합니다. 설정/credential은 workflow snapshot,
+artifact catalog, handoff나 provenance에 추가되지 않습니다. Connection test는 짧은 Responses 요청만 보내며 workflow를 만들거나 진행하지 않습니다.
+
+호환 endpoint에는 **Responses API** 지원이 필요합니다. Structured output, tool calling, Researcher web search 등은
+해당 workflow가 기존에 요구하던 기능을 endpoint가 지원해야 합니다. Connection test 성공이 모든 기능의 지원을 보장하지는 않습니다.
+Chat-Completions-only endpoint 변환, OS credential store, PySide6 UI 및 packaging은 이번 단계에 포함하지 않습니다.
+
+Provider-free acceptance:
+
+```bash
+uv run pytest tests/llm/test_provider_config.py tests/integration/test_provider_config_acceptance.py -q
+```
+
+실제 provider acceptance는 명시적인 요청이 있을 때만 실행합니다.
 
 ---
 

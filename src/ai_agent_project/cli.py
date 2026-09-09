@@ -80,6 +80,7 @@ from ai_agent_project.agent.research_file_store import (
     default_research_run_store_root,
 )
 from ai_agent_project.agent.upgrade import ProjectMode
+from ai_agent_project.llm.config import ProviderConfig, ProviderConfigService
 
 
 class CliError(Exception):
@@ -137,6 +138,8 @@ def run_cli(
     build_service = service_builder or _build_production_service
 
     try:
+        if arguments.top_level == "config":
+            return _run_llm_config_command(arguments, output)
         if arguments.top_level == "research":
             return _run_research_command(
                 arguments,
@@ -197,9 +200,42 @@ def run_cli(
         return 1
 
 
+def _run_llm_config_command(arguments: argparse.Namespace, output: TextIO) -> int:
+    service = ProviderConfigService(arguments.config_file)
+    if arguments.command == "test":
+        result = service.test_connection()
+        print(result.message, file=output)
+        return 0 if result.success else 1
+    config = service.resolve()
+    if arguments.command == "set":
+        updates = {
+            name: getattr(arguments, name)
+            for name in ("provider_type", "base_url", "model", "timeout_seconds")
+            if getattr(arguments, name) is not None
+        }
+        config = ProviderConfig.model_validate({**config.model_dump(), **updates})
+        service.save(config)
+    print(config.model_dump_json(indent=2), file=output)
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ai-agent")
     top_level = parser.add_subparsers(dest="top_level", required=True)
+    config = top_level.add_parser("config", help="Manage user settings")
+    config_sections = config.add_subparsers(dest="section", required=True)
+    llm = config_sections.add_parser("llm", help="OpenAI-compatible provider settings")
+    llm.add_argument(
+        "--config-file", type=Path, help="Override user configuration file"
+    )
+    llm_commands = llm.add_subparsers(dest="command", required=True)
+    llm_commands.add_parser("show", help="Show effective settings without credentials")
+    set_llm = llm_commands.add_parser("set", help="Save non-secret provider settings")
+    set_llm.add_argument("--provider-type")
+    set_llm.add_argument("--base-url")
+    set_llm.add_argument("--model")
+    set_llm.add_argument("--timeout-seconds", type=float)
+    llm_commands.add_parser("test", help="Test configured provider connection")
     project = top_level.add_parser("project", help="Manage persisted project runs")
     project.add_argument(
         "--store-root",

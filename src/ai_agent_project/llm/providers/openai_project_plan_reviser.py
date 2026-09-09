@@ -1,15 +1,16 @@
 """OpenAI structured-output provider for pre-execution project plan revisions."""
 
 import json
-import os
 
 from pydantic import ValidationError
 
 from ai_agent_project.agent.plan_revision import ProjectPlanReviser
 from ai_agent_project.agent.project import ProjectPlan, ProjectSpecification
 from ai_agent_project.agent.workspace import WorkspaceSnapshot
-from ai_agent_project.llm.providers.openai import DEFAULT_MODEL, OpenAIAPIClient
+from ai_agent_project.llm.config import ProviderConfig
+from ai_agent_project.llm.providers.openai import OpenAIAPIClient
 from ai_agent_project.llm.providers.structured_schema import openai_strict_json_schema
+from ai_agent_project.llm.runtime import ConfiguredOpenAIProvider
 
 PROJECT_PLAN_REVISION_INSTRUCTIONS = """Revise the supplied project plan according
 to explicit user feedback. Return only data matching the supplied JSON schema.
@@ -27,19 +28,25 @@ class ProjectPlanRevisionError(ValueError):
     """Raised when OpenAI output cannot become a valid project plan revision."""
 
 
-class OpenAIProjectPlanReviser(ProjectPlanReviser):
+class OpenAIProjectPlanReviser(ConfiguredOpenAIProvider, ProjectPlanReviser):
     """Revise project phases while preserving the current implementation plan."""
 
     def __init__(
         self,
         *,
+        config: ProviderConfig | None = None,
+        request_timeout_seconds: float | None = None,
         api_key: str | None = None,
         model: str | None = None,
         client: OpenAIAPIClient | None = None,
     ) -> None:
-        self._model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
-        self._client = client
-        self._api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self._configure(
+            config=config,
+            api_key=api_key,
+            model=model,
+            client=client,
+            timeout_seconds=request_timeout_seconds,
+        )
 
     def revise(
         self,
@@ -96,13 +103,3 @@ class OpenAIProjectPlanReviser(ProjectPlanReviser):
             raise ProjectPlanRevisionError(
                 "OpenAI returned a revised project plan that failed validation"
             ) from error
-
-    def _get_client(self) -> OpenAIAPIClient:
-        if self._client is not None:
-            return self._client
-        if not self._api_key:
-            raise ValueError("OPENAI_API_KEY must be configured")
-        from openai import OpenAI
-
-        self._client = OpenAI(api_key=self._api_key)
-        return self._client

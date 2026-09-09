@@ -21,6 +21,7 @@ from ai_agent_project.llm.providers.openai_research_plan_generator import (
     OpenAIResearchPlanGenerator,
     ResearchPlanGenerationError,
 )
+from ai_agent_project.llm.runtime import ProviderRequestError
 
 
 class _Responses:
@@ -233,9 +234,9 @@ def test_strict_plan_generator_rejects_malformed_output(output: str | None) -> N
         generator.generate(request, direction, report)
 
 
-def test_strict_plan_generator_propagates_provider_failure() -> None:
+def test_strict_plan_generator_sanitizes_provider_failure() -> None:
     generator, _ = _generator(RuntimeError("provider unavailable"))
     request, direction, report = _context()
 
-    with pytest.raises(RuntimeError, match="provider unavailable"):
+    with pytest.raises(ProviderRequestError, match="LLM provider request failed"):
         generator.generate(request, direction, report)

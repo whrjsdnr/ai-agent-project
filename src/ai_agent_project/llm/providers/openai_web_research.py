@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -20,7 +19,9 @@ from ai_agent_project.agent.research_sources import (
     ResearchSourceProvider,
     RetrievedResearchSource,
 )
-from ai_agent_project.llm.providers.openai import DEFAULT_MODEL, OpenAIAPIClient
+from ai_agent_project.llm.config import ProviderConfig
+from ai_agent_project.llm.providers.openai import OpenAIAPIClient
+from ai_agent_project.llm.runtime import ConfiguredOpenAIProvider
 
 _SENTENCE_BOUNDARIES = re.compile(r"[.!?]\s|\n\n")
 
@@ -29,7 +30,7 @@ class WebResearchSourceError(ValueError):
     """Raised when tool-grounded web search cannot yield usable source excerpts."""
 
 
-class OpenAIWebResearchSourceProvider(ResearchSourceProvider):
+class OpenAIWebResearchSourceProvider(ConfiguredOpenAIProvider, ResearchSourceProvider):
     """Use only Responses web-search metadata plus URL-citation annotations.
 
     The provider deliberately stores citation-linked generated text as a bounded
@@ -39,21 +40,25 @@ class OpenAIWebResearchSourceProvider(ResearchSourceProvider):
     def __init__(
         self,
         *,
+        config: ProviderConfig | None = None,
         api_key: str | None = None,
         model: str | None = None,
         client: OpenAIAPIClient | None = None,
         max_excerpt_characters: int = 800,
-        request_timeout_seconds: float = 90.0,
+        request_timeout_seconds: float | None = None,
     ) -> None:
         if max_excerpt_characters < 80:
             raise ValueError("max_excerpt_characters must be at least 80")
-        if request_timeout_seconds <= 0:
+        if request_timeout_seconds is not None and request_timeout_seconds <= 0:
             raise ValueError("request_timeout_seconds must be positive")
-        self._model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
-        self._api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self._client = client
+        self._configure(
+            config=config,
+            api_key=api_key,
+            model=model,
+            client=client,
+            timeout_seconds=request_timeout_seconds,
+        )
         self._max_excerpt_characters = max_excerpt_characters
-        self._request_timeout_seconds = request_timeout_seconds
         self._retrieved: dict[str, RetrievedResearchSource] = {}
 
     def search(
@@ -112,18 +117,6 @@ class OpenAIWebResearchSourceProvider(ResearchSourceProvider):
                 "No tool-grounded excerpt is available for source"
             )
         return retrieved
-
-    def _get_client(self) -> OpenAIAPIClient:
-        if self._client is not None:
-            return self._client
-        if not self._api_key:
-            raise ValueError("OPENAI_API_KEY must be configured")
-        from openai import OpenAI
-
-        self._client = OpenAI(
-            api_key=self._api_key, timeout=self._request_timeout_seconds
-        )
-        return self._client
 
 
 def _tool_backed_urls(items: Iterable[Any]) -> set[str]:

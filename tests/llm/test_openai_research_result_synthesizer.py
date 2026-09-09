@@ -24,6 +24,7 @@ from ai_agent_project.llm.providers.openai_research_result_synthesizer import (
     OpenAIResearchResultSynthesizer,
     ResearchResultSynthesisError,
 )
+from ai_agent_project.llm.runtime import ProviderRequestError
 
 
 class _Responses:
@@ -164,8 +165,8 @@ def test_synthesizer_rejects_malformed_output(result: object) -> None:
         ).synthesize(*_context())
 
 
-def test_synthesizer_propagates_provider_error_and_validates_timeout() -> None:
-    with pytest.raises(RuntimeError, match="down"):
+def test_synthesizer_sanitizes_provider_error_and_validates_timeout() -> None:
+    with pytest.raises(ProviderRequestError, match="LLM provider request failed"):
         OpenAIResearchResultSynthesizer(
             client=_Client(RuntimeError("down")), model="test"
         ).synthesize(*_context())

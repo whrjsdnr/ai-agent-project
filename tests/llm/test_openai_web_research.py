@@ -8,6 +8,7 @@ from ai_agent_project.llm.providers.openai_web_research import (
     OpenAIWebResearchSourceProvider,
     WebResearchSourceError,
 )
+from ai_agent_project.llm.runtime import ProviderRequestError
 
 
 class _Responses:
@@ -137,5 +138,5 @@ def test_fetch_unknown_candidate_never_falls_back_to_model() -> None:
 def test_provider_exception_propagates() -> None:
     provider = _provider(RuntimeError("provider unavailable"))
 
-    with pytest.raises(RuntimeError, match="provider unavailable"):
+    with pytest.raises(ProviderRequestError, match="LLM provider request failed"):
         provider.search(_question(), max_results=1)

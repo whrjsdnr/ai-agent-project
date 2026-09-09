@@ -9,6 +9,7 @@ from ai_agent_project.llm.providers.openai_project_mode_proposer import (
     OpenAIProjectModeProposer,
     ProjectModeProposalError,
 )
+from ai_agent_project.llm.runtime import ProviderRequestError
 
 
 class _Responses:
@@ -57,12 +58,12 @@ def test_mode_proposer_rejects_malformed_output(output: str | None) -> None:
         ).propose("x")
 
 
-def test_mode_proposer_validates_timeout_and_propagates_client_error() -> None:
+def test_mode_proposer_validates_timeout_and_sanitizes_client_error() -> None:
     with pytest.raises(ValueError, match="positive"):
         OpenAIProjectModeProposer(
             client=_Client(SimpleNamespace()), request_timeout_seconds=0
         )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ProviderRequestError, match="LLM provider request failed"):
         OpenAIProjectModeProposer(client=_Client(RuntimeError()), model="test").propose(
             "x"
         )

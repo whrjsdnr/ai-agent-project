@@ -31,6 +31,7 @@ from ai_agent_project.llm.providers.openai_research_paper_materials import (
     OpenAIResearchPaperMaterialsGenerator,
     ResearchPaperMaterialsError,
 )
+from ai_agent_project.llm.runtime import ProviderRequestError
 
 
 class _Responses:
@@ -193,8 +194,8 @@ def test_provider_rejects_malformed_output(result):
         ).generate(*_context())
 
 
-def test_provider_propagates_client_failure_and_validates_timeout():
-    with pytest.raises(RuntimeError):
+def test_provider_sanitizes_client_failure_and_validates_timeout():
+    with pytest.raises(ProviderRequestError, match="LLM provider request failed"):
         OpenAIResearchPaperMaterialsGenerator(
             client=_Client(RuntimeError()), model="test"
         ).generate(*_context())

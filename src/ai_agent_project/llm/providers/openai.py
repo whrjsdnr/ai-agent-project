@@ -1,9 +1,8 @@
 """OpenAI Responses API implementation of the LLM client interface."""
 
 import json
-import os
 from collections.abc import Mapping
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from openai.types.responses import (
     ResponseFunctionToolCallParam,
@@ -13,32 +12,27 @@ from openai.types.responses import (
 
 from ai_agent_project.agent.state import AgentMessage, ToolCall
 from ai_agent_project.llm.base import LLMResponse
+from ai_agent_project.llm.config import DEFAULT_MODEL, ProviderConfig
+from ai_agent_project.llm.runtime import (
+    ConfiguredOpenAIProvider,
+    OpenAIAPIClient,
+    ResponsesAPI,
+)
 from ai_agent_project.tools.base import ToolDefinition
 
-DEFAULT_MODEL = "gpt-5-mini"
+__all__ = ["DEFAULT_MODEL", "OpenAIAPIClient", "OpenAIClient", "ResponsesAPI"]
+
 ToolChoice = Literal["auto", "required"]
 
 
-class ResponsesAPI(Protocol):
-    """The subset of the OpenAI Responses API used by this provider."""
-
-    def create(self, **kwargs: Any) -> Any:
-        """Create a model response."""
-        ...
-
-
-class OpenAIAPIClient(Protocol):
-    """The subset of the OpenAI client used by this provider."""
-
-    responses: ResponsesAPI
-
-
-class OpenAIClient:
+class OpenAIClient(ConfiguredOpenAIProvider):
     """Adapt the OpenAI Responses API to the application's LLM interface."""
 
     def __init__(
         self,
         *,
+        config: ProviderConfig | None = None,
+        request_timeout_seconds: float | None = None,
         api_key: str | None = None,
         model: str | None = None,
         client: OpenAIAPIClient | None = None,
@@ -48,9 +42,13 @@ class OpenAIClient:
         if tool_choice not in {"auto", "required"}:
             raise ValueError("tool_choice must be 'auto' or 'required'")
 
-        self._model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
-        self._client = client
-        self._api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self._configure(
+            config=config,
+            api_key=api_key,
+            model=model,
+            client=client,
+            timeout_seconds=request_timeout_seconds,
+        )
         self._use_previous_response_id = use_previous_response_id
         self._tool_choice = tool_choice
 
@@ -278,19 +276,6 @@ class OpenAIClient:
                 input_items.append({"role": message.role, "content": message.content})
 
         return input_items
-
-    def _get_client(self) -> OpenAIAPIClient:
-        """Create the SDK client only when an agent run needs it."""
-        if self._client is not None:
-            return self._client
-
-        if not self._api_key:
-            raise ValueError("OPENAI_API_KEY must be configured")
-
-        from openai import OpenAI
-
-        self._client = OpenAI(api_key=self._api_key)
-        return self._client
 
     @staticmethod
     def _extract_tool_calls(response: Any) -> list[ToolCall]:
