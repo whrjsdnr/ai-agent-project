@@ -30,6 +30,12 @@ class DesktopProjectSummary(DesktopModel):
     pending_actions: tuple[DesktopPendingActionView, ...]
 
 
+class DesktopDirectionView(DesktopModel):
+    direction_id: str
+    title: str
+    question: str
+
+
 class DesktopLaneView(DesktopModel):
     domain: str
     bound: bool
@@ -37,6 +43,12 @@ class DesktopLaneView(DesktopModel):
     status: str | None
     phase: str | None
     pending_action: DesktopPendingActionView | None
+    selected_direction: str | None = None
+    directions: tuple[DesktopDirectionView, ...] = ()
+    approved_plan_version: int | None = None
+    implementation_plan_version: int | None = None
+    result_state: str | None = None
+    synthesis_state: str | None = None
     # Resolver guidance only. The action service still authorizes each request.
     available_actions: tuple[str, ...]
 
@@ -58,6 +70,7 @@ class DesktopArtifactView(DesktopModel):
 
 
 class DesktopHandoffSummary(DesktopModel):
+    bootstrap_available: bool = False
     handoff_id: str
     source_domain: str
     artifact_id: str

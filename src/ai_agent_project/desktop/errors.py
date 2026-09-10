@@ -26,6 +26,7 @@ from ai_agent_project.agent.project_artifact_application import (
     ProjectArtifactError,
     ProjectArtifactNotFoundError,
 )
+from ai_agent_project.agent.project_artifact_export import ProjectArtifactExportError
 from ai_agent_project.agent.project_artifact_rendering import (
     ProjectArtifactRenderingError,
 )
@@ -126,10 +127,14 @@ def desktop_boundary[**P, R](operation: Callable[P, R]) -> Callable[P, R]:
                 DesktopErrorCode.PROVIDER_ERROR,
                 "Provider request failed. Check connection and provider settings.",
             ) from None
-        except (ValidationError, ProjectArtifactRenderingError):
+        except (
+            ValidationError,
+            ProjectArtifactRenderingError,
+            ProjectArtifactExportError,
+        ):
             raise DesktopError(
                 DesktopErrorCode.VALIDATION_ERROR,
-                "Invalid input. Check required fields and the supported artifact format.",
+                "Invalid input. Check required fields, artifact format, or a new export filename in an existing folder.",
             ) from None
         except (
             ProjectSessionError,

@@ -12,9 +12,11 @@ dependencies = [
     "httpx>=0.28.1",
     "openai>=3.6.0",
     "pydantic>=2.13.5",
+    "pyside6>=6.11.2",
 ]
 
 [project.scripts]
+ai-agent-desktop = "ai_agent_project.desktop_app.main:main"
 ai-agent-project = "ai_agent_project:main"
 ai-agent = "ai_agent_project.cli:main"
 

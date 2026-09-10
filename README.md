@@ -957,3 +957,34 @@ Current version:
 ```
 
 현재 단계에서는 lifecycle 기반 AI coding agent의 MVP 구현과 CLI end-to-end acceptance validation까지 완료된 상태입니다.
+
+## Phase 6C — Native desktop application
+
+Launch the local PySide6 application:
+
+```bash
+uv run ai-agent-desktop
+```
+
+The existing `uv run ai-agent ...` CLI remains available. The desktop requires
+no browser or FastAPI server. Dashboard and project navigation work without a
+provider credential. Use Settings to save an OpenAI-compatible endpoint, model
+and timeout. A supplied API key remains in memory for this app session; it is
+never saved to the regular JSON settings file. Save Settings retains the runtime
+key; Test Connection tests the entered configuration without saving it.
+
+Create a project to request a mode proposal, then explicitly confirm WorkMode
+and ProjectMode. For an unbound lane, create its run and explicitly confirm
+binding in the resulting dialog, or bind an existing run by ID. If binding is
+cancelled, copy the saved run ID to bind it later. Approvals, direction selection,
+result submission, continuation, handoff creation and bootstrap remain separate
+user actions. Researcher artifacts are never executed by the UI.
+
+The desktop uses the existing local project/run/handoff stores and user provider
+configuration. New Developer runs use the launch working directory; continuing
+an existing Developer run honors its saved workspace. A running operation must
+finish before the window can close. Navigation and Refresh only read state.
+Artifacts offer safe JSON preview, copy and no-overwrite JSON export.
+
+Verification and Phase 6D deferrals are documented in
+[PHASE_6C_PYSIDE6_DESKTOP_UI.md](PHASE_6C_PYSIDE6_DESKTOP_UI.md).

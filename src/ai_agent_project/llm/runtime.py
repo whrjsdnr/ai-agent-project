@@ -1,5 +1,8 @@
 """Shared OpenAI-compatible SDK boundary; no workflow state or provider registry."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Protocol
 
 from ai_agent_project.llm.config import (
@@ -91,4 +94,25 @@ class ConfiguredOpenAIProvider:
     def _get_client(self) -> OpenAIAPIClient:
         if self._client is None:
             self._client = build_openai_client(self._config)
+            clients = _operation_clients.get()
+            if clients is not None:
+                clients.append(self._client)
         return self._client
+
+
+# Desktop operations own and release their lazy clients when a single call ends.
+_operation_clients: ContextVar[list | None] = ContextVar(
+    "operation_clients", default=None
+)
+
+
+@contextmanager
+def provider_client_scope() -> Iterator[None]:
+    clients = []
+    token = _operation_clients.set(clients)
+    try:
+        yield
+    finally:
+        _operation_clients.reset(token)
+        for client in clients:
+            client.close()

@@ -4,6 +4,8 @@ Construct with the same services/readers used by the local application. Reads
 only inspect snapshots. Mutations invoke one explicitly named application command.
 """
 
+from pathlib import Path
+
 from ai_agent_project.agent.hybrid_coordination_application import (
     HybridCoordinationService,
 )
@@ -17,6 +19,7 @@ from ai_agent_project.agent.project_action_application import (
     SelectResearchDirectionCommand,
 )
 from ai_agent_project.agent.project_artifact_application import ProjectArtifactService
+from ai_agent_project.agent.project_artifact_export import ProjectArtifactExportService
 from ai_agent_project.agent.project_artifact_rendering import (
     ProjectArtifactFormat,
     render_project_artifact,
@@ -24,7 +27,10 @@ from ai_agent_project.agent.project_artifact_rendering import (
 from ai_agent_project.agent.project_developer_bootstrap_application import (
     ProjectDeveloperBootstrapService,
 )
-from ai_agent_project.agent.project_handoff import ProjectHandoffPurpose
+from ai_agent_project.agent.project_handoff import (
+    SUPPORTED_HANDOFF_ARTIFACTS,
+    ProjectHandoffPurpose,
+)
 from ai_agent_project.agent.project_handoff_application import ProjectHandoffService
 from ai_agent_project.agent.project_session import ProjectPendingAction, ProjectSession
 from ai_agent_project.agent.project_session_application import (
@@ -44,6 +50,7 @@ from ai_agent_project.desktop.models import (
     DesktopArtifactView,
     DesktopConnectionView,
     DesktopDashboardView,
+    DesktopDirectionView,
     DesktopHandoffSummary,
     DesktopHybridView,
     DesktopLaneView,
@@ -94,6 +101,8 @@ class DesktopService:
         developer_reader: DeveloperRunReader,
         research_reader: ResearchRunReader,
         bootstrap: ProjectDeveloperBootstrapService | None = None,
+        developer_application=None,
+        research_application=None,
     ) -> None:
         self._sessions = project_sessions
         self._actions = actions
@@ -104,6 +113,8 @@ class DesktopService:
         self._developers = developer_reader
         self._researchers = research_reader
         self._bootstrap = bootstrap
+        self._developer_application = developer_application
+        self._research_application = research_application
 
     def _summary(self, project: ProjectSession) -> DesktopProjectSummary:
         return DesktopProjectSummary(
@@ -147,6 +158,7 @@ class DesktopService:
     ) -> DesktopLaneView:
         pending = next((a for a in actions if a.domain == domain), None)
         status = phase = None
+        details = {}
         if run_id is not None:
             reader = self._developers if domain == "developer" else self._researchers
             run = reader.get(run_id)
@@ -159,7 +171,34 @@ class DesktopService:
                 phase = run.execution_state.current_phase_id
             else:
                 status = run.status.value
+                phase = status
+                details = {
+                    "selected_direction": run.selected_direction_id,
+                    "directions": tuple(
+                        DesktopDirectionView(
+                            direction_id=d.id,
+                            title=d.title,
+                            question=d.research_question,
+                        )
+                        for d in run.report.directions
+                    ),
+                    "approved_plan_version": run.plan_revision_state.active_version
+                    if run.plan_revision_state
+                    else None,
+                    "implementation_plan_version": run.implementation_plan.approved_plan_version
+                    if run.implementation_plan
+                    else None,
+                    "result_state": "Provided"
+                    if run.result_submission
+                    else "Not provided",
+                    "synthesis_state": "Materials available"
+                    if run.paper_materials
+                    else "Synthesis available"
+                    if run.result_synthesis
+                    else "Not generated",
+                }
         return DesktopLaneView(
+            **details,
             domain=domain,
             bound=run_id is not None,
             run_id=run_id,
@@ -226,9 +265,18 @@ class DesktopService:
 
     @desktop_boundary
     def list_handoffs(self, project_id: str) -> tuple[DesktopHandoffSummary, ...]:
-        self._sessions.get_project(project_id)
+        project = self._sessions.get_project(project_id).project
         return tuple(
             DesktopHandoffSummary(
+                bootstrap_available=(
+                    self._bootstrap is not None
+                    and project.status == "active"
+                    and project.work_mode == WorkMode.HYBRID
+                    and project.project_mode == ProjectMode.NEW
+                    and project.developer_run_id is None
+                    and project.research_run_id is not None
+                    and v.status == "available"
+                ),
                 handoff_id=v.handoff.handoff_id,
                 source_domain=v.handoff.source_domain,
                 artifact_id=v.handoff.artifact_id,
@@ -348,3 +396,55 @@ class DesktopService:
         return self._bootstrap.bootstrap(
             project_id, handoff_id, request
         ).developer_run_id
+
+    @desktop_boundary
+    def create_developer_run(self, project_id: str) -> str:
+        """Create only; binding is a separate explicit command."""
+        project = self._sessions.get_project(project_id).project
+        if self._developer_application is None or project.work_mode not in {
+            WorkMode.DEVELOPER,
+            WorkMode.HYBRID,
+        }:
+            raise DesktopError(
+                DesktopErrorCode.INVALID_STATE,
+                "Confirm a Developer or Hybrid mode first.",
+            )
+        if project.project_mode == ProjectMode.UPGRADE:
+            return self._developer_application.create_upgrade_project(
+                project.original_request
+            ).id
+        return self._developer_application.create_project(project.original_request).id
+
+    @desktop_boundary
+    def create_research_run(self, project_id: str) -> str:
+        """Discover only; selection and binding remain explicit."""
+        project = self._sessions.get_project(project_id).project
+        if self._research_application is None or project.work_mode not in {
+            WorkMode.RESEARCHER,
+            WorkMode.HYBRID,
+        }:
+            raise DesktopError(
+                DesktopErrorCode.INVALID_STATE,
+                "Confirm a Researcher or Hybrid mode first.",
+            )
+        return self._research_application.create_research_run(
+            project.original_request
+        ).id
+
+    @desktop_boundary
+    def export_artifact(
+        self, project_id: str, artifact_id: str, destination: Path
+    ) -> None:
+        """Use existing ownership-checked, no-overwrite, no-symlink export."""
+        ProjectArtifactExportService(self._artifacts).export_artifact(
+            project_id, artifact_id, ProjectArtifactFormat.JSON, destination
+        )
+
+    @desktop_boundary
+    def can_create_handoff(self, project_id: str, artifact_id: str) -> bool:
+        project = self._sessions.get_project(project_id).project
+        artifact = self._artifacts.get_artifact(project_id, artifact_id)
+        return (
+            project.work_mode == WorkMode.HYBRID
+            and artifact.descriptor.artifact_type in SUPPORTED_HANDOFF_ARTIFACTS
+        )
