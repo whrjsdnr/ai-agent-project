@@ -29,8 +29,30 @@ class _SafeResponses:
         self._responses = responses
 
     def create(self, **kwargs: Any) -> Any:
+        from ai_agent_project.improvement.context import (
+            AUTHORITY,
+            current_context,
+            note_context_use,
+        )
+
+        context = current_context()
+        if context is not None and context.rules:
+            kwargs = dict(kwargs)
+            kwargs["instructions"] = (
+                (kwargs.get("instructions") or "") + "\n" + AUTHORITY
+            )
+            original = kwargs.get("input", "")
+            guidance = context.prompt()
+            kwargs["input"] = (
+                [*original, {"role": "user", "content": guidance}]
+                if isinstance(original, list)
+                else str(original) + "\n" + guidance
+            )
         try:
-            return self._responses.create(**kwargs)
+            result = self._responses.create(**kwargs)
+            if context is not None and context.rules:
+                note_context_use()
+            return result
         except Exception:  # noqa: BLE001 -- provider errors may contain secrets
             # SDK errors can contain request headers, endpoint URLs or response bodies.
             raise ProviderRequestError(

@@ -101,9 +101,17 @@ class DesktopService:
         developer_reader: DeveloperRunReader,
         research_reader: ResearchRunReader,
         bootstrap: ProjectDeveloperBootstrapService | None = None,
+        improvements=None,
         developer_application=None,
         research_application=None,
     ) -> None:
+        from ai_agent_project.improvement.service import build_improvement_service
+
+        self._improvements = improvements or build_improvement_service(
+            developer_reader=developer_reader,
+            researcher_reader=research_reader,
+            projects=project_sessions,
+        )
         self._sessions = project_sessions
         self._actions = actions
         self._artifacts = artifacts
@@ -393,9 +401,12 @@ class DesktopService:
                 DesktopErrorCode.CONFIGURATION_ERROR,
                 "Developer bootstrap service is not configured.",
             )
-        return self._bootstrap.bootstrap(
-            project_id, handoff_id, request
-        ).developer_run_id
+        from ai_agent_project.improvement.context import project_context
+
+        with project_context(project_id):
+            return self._bootstrap.bootstrap(
+                project_id, handoff_id, request
+            ).developer_run_id
 
     @desktop_boundary
     def create_developer_run(self, project_id: str) -> str:
@@ -409,11 +420,16 @@ class DesktopService:
                 DesktopErrorCode.INVALID_STATE,
                 "Confirm a Developer or Hybrid mode first.",
             )
-        if project.project_mode == ProjectMode.UPGRADE:
-            return self._developer_application.create_upgrade_project(
+        from ai_agent_project.improvement.context import project_context
+
+        with project_context(project_id):
+            if project.project_mode == ProjectMode.UPGRADE:
+                return self._developer_application.create_upgrade_project(
+                    project.original_request
+                ).id
+            return self._developer_application.create_project(
                 project.original_request
             ).id
-        return self._developer_application.create_project(project.original_request).id
 
     @desktop_boundary
     def create_research_run(self, project_id: str) -> str:
@@ -427,9 +443,12 @@ class DesktopService:
                 DesktopErrorCode.INVALID_STATE,
                 "Confirm a Researcher or Hybrid mode first.",
             )
-        return self._research_application.create_research_run(
-            project.original_request
-        ).id
+        from ai_agent_project.improvement.context import project_context
+
+        with project_context(project_id):
+            return self._research_application.create_research_run(
+                project.original_request
+            ).id
 
     @desktop_boundary
     def export_artifact(
@@ -448,3 +467,59 @@ class DesktopService:
             project.work_mode == WorkMode.HYBRID
             and artifact.descriptor.artifact_type in SUPPORTED_HANDOFF_ARTIFACTS
         )
+
+    @desktop_boundary
+    def get_improvement_overview(self):
+        return self._improvements.overview()
+
+    @desktop_boundary
+    def list_improvement_candidates(self):
+        return self._improvements.list_candidates()
+
+    @desktop_boundary
+    def list_improvement_rules(self):
+        return self._improvements.list_rules()
+
+    @desktop_boundary
+    def get_improvement_candidate(self, identity):
+        return self._improvements.get_candidate(identity)
+
+    @desktop_boundary
+    def get_improvement_rule(self, identity):
+        return self._improvements.get_rule(identity)
+
+    @desktop_boundary
+    def evaluate_developer_run(self, run_id):
+        return self._improvements.evaluate("developer", run_id)
+
+    @desktop_boundary
+    def evaluate_researcher_run(self, run_id):
+        return self._improvements.evaluate("researcher", run_id)
+
+    @desktop_boundary
+    def approve_improvement_candidate(self, identity, scope=None):
+        return self._improvements.approve_candidate(identity, scope)
+
+    @desktop_boundary
+    def reject_improvement_candidate(self, identity):
+        self._improvements.reject_candidate(identity)
+
+    @desktop_boundary
+    def enable_improvement_rule(self, identity):
+        self._improvements.set_enabled(identity, True)
+
+    @desktop_boundary
+    def disable_improvement_rule(self, identity):
+        self._improvements.set_enabled(identity, False)
+
+    @desktop_boundary
+    def submit_improvement_feedback(self, target_type, target_id, rating, text=""):
+        return self._improvements.submit_feedback(target_type, target_id, rating, text)
+
+    @desktop_boundary
+    def get_improvement_impact(self, identity):
+        return self._improvements.impact(identity)
+
+    @desktop_boundary
+    def get_improvement_conflicts(self, identity):
+        return self._improvements.conflicts(identity)

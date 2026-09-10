@@ -46,6 +46,7 @@ from ai_agent_project.agent.research_application import (
     ResearchRunError,
     ResearchRunNotFoundError,
 )
+from ai_agent_project.improvement.errors import ImprovementError
 from ai_agent_project.llm.config import ProviderConfigError
 from ai_agent_project.llm.providers.openai_planner import ImplementationPlanningError
 from ai_agent_project.llm.providers.openai_project_mode_proposer import (
@@ -107,6 +108,8 @@ def desktop_boundary[**P, R](operation: Callable[P, R]) -> Callable[P, R]:
                 DesktopErrorCode.ACTION_NOT_ALLOWED,
                 "This action is not currently allowed. Refresh the project and review its pending actions.",
             ) from None
+        except ImprovementError as error:
+            raise DesktopError(DesktopErrorCode.INVALID_STATE, str(error)) from None
         except ProviderConfigError:
             raise DesktopError(
                 DesktopErrorCode.CONFIGURATION_ERROR,

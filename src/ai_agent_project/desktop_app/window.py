@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         "Researcher",
         "Hybrid",
         "Artifacts",
+        "Improvements",
         "Settings",
     )
 
@@ -96,6 +97,9 @@ class MainWindow(QMainWindow):
         )
         self.pages["Artifacts"] = ArtifactsPage(self)
         self.pages["Settings"] = SettingsPage(self)
+        from ai_agent_project.desktop_app.improvements import ImprovementsPage
+
+        self.pages["Improvements"] = ImprovementsPage(self)
         self.page_indices = {}
         for name, page in self.pages.items():
             scroll = QScrollArea()

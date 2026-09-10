@@ -307,6 +307,7 @@ def create_app(
     project_handoff_service: ProjectHandoffService | None = None,
     *,
     provider_config: ProviderConfig | None = None,
+    improvement_service=None,
 ) -> FastAPI:
     """Create the FastAPI app with injectable agent and default workspace root."""
     provider_config = ProviderConfigService().resolve(provider_config)
@@ -392,7 +393,25 @@ def create_app(
             project_application_service,
         )
 
+    from ai_agent_project.api.improvements import register_improvement_routes
+    from ai_agent_project.improvement.context import ImprovementAwareApplication
+    from ai_agent_project.improvement.service import build_improvement_service
+
+    improvement_service = improvement_service or build_improvement_service(
+        developer_reader=project_run_store
+        or getattr(project_application_service, "_store", None),
+        researcher_reader=research_run_store
+        or getattr(research_application_service, "_store", None),
+        projects=project_session_service,
+        provider_config=provider_config,
+    )
+    # Share the same read context and usage store with production command wrappers.
+    for application in (project_application_service, research_application_service):
+        if isinstance(application, ImprovementAwareApplication):
+            application.improvements = improvement_service
+
     app = FastAPI(title="AI Agent Project")
+    register_improvement_routes(app, improvement_service)
     app.state.agent_service = agent_service
     app.state.coding_agent_service = coding_agent_service
     app.state.project_application_service = project_application_service
@@ -633,9 +652,12 @@ def create_app(
         project_id: str, request: DeveloperBootstrapRequest
     ) -> DeveloperBootstrapResult:
         try:
-            return require_project_developer_bootstrap_service().bootstrap(
-                project_id, request.handoff_id, request.request
-            )
+            from ai_agent_project.improvement.context import project_context
+
+            with project_context(project_id):
+                return require_project_developer_bootstrap_service().bootstrap(
+                    project_id, request.handoff_id, request.request
+                )
         except ProjectSessionNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ProjectDeveloperBootstrapError as error:

@@ -41,6 +41,7 @@ from ai_agent_project.composition import (
     create_default_research_application_service,
 )
 from ai_agent_project.desktop import DesktopService
+from ai_agent_project.improvement.service import build_improvement_service
 from ai_agent_project.llm.config import ProviderConfig, ProviderConfigService
 from ai_agent_project.llm.providers.openai_project_mode_proposer import (
     OpenAIProjectModeProposer,
@@ -105,6 +106,21 @@ def build_desktop_application(
     provider = SessionProviderConfigService(
         root / "settings" / "llm.json" if root else None
     )
+    sessions = ProjectSessionService(
+        FileProjectStore(root / "projects" if root else default_project_store_root()),
+        LazyApplication(
+            lambda name, args: OpenAIProjectModeProposer(config=provider.resolve())
+        ),
+        developers,
+        researchers,
+    )
+    improvements = build_improvement_service(
+        root=root / "improvements" if root else None,
+        developer_reader=developers,
+        researcher_reader=researchers,
+        projects=sessions,
+        provider_config=provider.resolve,
+    )
     developer = LazyApplication(
         lambda name, args: create_default_project_application_service(
             developers.workspace_root_for(args[0])
@@ -112,27 +128,23 @@ def build_desktop_application(
             else workspace,
             store=developers,
             provider_config=provider.resolve(),
+            improvement_service=improvements,
         )
     )
     research = LazyApplication(
         lambda name, args: create_default_research_application_service(
-            workspace, store=researchers, provider_config=provider.resolve()
+            workspace,
+            store=researchers,
+            provider_config=provider.resolve(),
+            improvement_service=improvements,
         )
-    )
-    proposer = LazyApplication(
-        lambda name, args: OpenAIProjectModeProposer(config=provider.resolve())
-    )
-    sessions = ProjectSessionService(
-        FileProjectStore(root / "projects" if root else default_project_store_root()),
-        proposer,
-        developers,
-        researchers,
     )
     artifacts = ProjectArtifactService(sessions, developers, researchers)
     handoff_store = FileProjectHandoffStore(
         root / "handoffs" if root else default_project_handoff_store_root()
     )
     return DesktopService(
+        improvements=improvements,
         project_sessions=sessions,
         actions=ProjectActionService(sessions, developer, research),
         artifacts=artifacts,

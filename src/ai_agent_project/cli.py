@@ -112,6 +112,7 @@ def run_cli(
     research_service_builder: ResearchServiceBuilder | None = None,
     project_session_service_builder: ProjectSessionServiceBuilder | None = None,
     project_action_service_builder: ProjectActionServiceBuilder | None = None,
+    improvement_service=None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -138,6 +139,10 @@ def run_cli(
     build_service = service_builder or _build_production_service
 
     try:
+        if arguments.top_level == "improvement":
+            from ai_agent_project.improvement.commands import run_command
+
+            return run_command(arguments, output, improvement_service)
         if arguments.top_level == "config":
             return _run_llm_config_command(arguments, output)
         if arguments.top_level == "research":
@@ -222,6 +227,9 @@ def _run_llm_config_command(arguments: argparse.Namespace, output: TextIO) -> in
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ai-agent")
     top_level = parser.add_subparsers(dest="top_level", required=True)
+    from ai_agent_project.improvement.commands import add_parser
+
+    add_parser(top_level)
     config = top_level.add_parser("config", help="Manage user settings")
     config_sections = config.add_subparsers(dest="section", required=True)
     llm = config_sections.add_parser("llm", help="OpenAI-compatible provider settings")
@@ -614,9 +622,12 @@ def _run_project_session_command(
                 cwd if cwd is not None else Path.cwd(), developer_store
             ),
         )
-        result = bootstrap_service.bootstrap(
-            arguments.project_id, arguments.handoff_id, arguments.request
-        )
+        from ai_agent_project.improvement.context import project_context
+
+        with project_context(arguments.project_id):
+            result = bootstrap_service.bootstrap(
+                arguments.project_id, arguments.handoff_id, arguments.request
+            )
         print(f"Project ID: {result.project_id}", file=output)
         print(f"Handoff ID: {result.handoff_id}", file=output)
         print(f"Developer Run ID: {result.developer_run_id}", file=output)
@@ -1376,11 +1387,15 @@ class _CliResearchActions:
 
     def _production(self, **providers: object) -> ResearchApplicationService:
         from ai_agent_project.agent.research_discovery import ResearchDiscoveryService
+        from ai_agent_project.improvement.context import ImprovementAwareApplication
+        from ai_agent_project.improvement.service import build_improvement_service
 
-        return ResearchApplicationService(
-            cast(ResearchDiscoveryService, object()),
-            self._store,
-            **providers,  # type: ignore[arg-type]
+        return ImprovementAwareApplication(
+            ResearchApplicationService(
+                cast(ResearchDiscoveryService, object()), self._store, **providers
+            ),
+            build_improvement_service(researcher_reader=self._store),
+            "researcher",
         )
 
 

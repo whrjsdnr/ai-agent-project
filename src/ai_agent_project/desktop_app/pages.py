@@ -74,6 +74,8 @@ class ProjectsPage(Page):
             self.layout.addLayout(metric_row)
         self.summary = label("")
         self.layout.addWidget(self.summary)
+        self.improvement_summary = label("")
+        self.layout.addWidget(self.improvement_summary)
         self.table = table(
             [
                 "Project",
@@ -101,6 +103,11 @@ class ProjectsPage(Page):
     def refresh(self) -> None:
         if self.dashboard:
             view = self.window.service.get_dashboard()
+            state = self.window.service.get_improvement_overview()
+            rules = self.window.service.list_improvement_rules()
+            self.improvement_summary.setText(
+                f"Improvement Candidates: {sum(c.status == 'pending' for c in state.candidates)} · Active Rules: {sum(r.enabled for r in rules)}"
+            )
             self.projects = view.recent_projects
             for widget, value in zip(
                 self.metrics,
@@ -208,6 +215,26 @@ class ProjectPage(Page):
                             f"Direction: {lane.selected_direction or 'Not selected'}\nResults: {lane.result_state}\nSynthesis / materials: {lane.synthesis_state}\nResearch artifacts are view / copy only."
                         )
                     )
+                from ai_agent_project.desktop_app.improvements import (
+                    evaluate_run,
+                    feedback_run,
+                )
+
+                evaluate = QPushButton("Evaluate Run")
+                evaluate.setObjectName(f"evaluate_{name}")
+                evaluate.clicked.connect(
+                    lambda checked=False, n=name, r=lane.run_id: evaluate_run(
+                        self.window, n, r
+                    )
+                )
+                layout.addWidget(evaluate)
+                feedback = QPushButton("Give Feedback")
+                feedback.clicked.connect(
+                    lambda checked=False, n=name, r=lane.run_id: feedback_run(
+                        self.window, n, r
+                    )
+                )
+                layout.addWidget(feedback)
                 if lane.pending_action:
                     self.add_pending(layout, lane.pending_action)
                 layout.addWidget(

@@ -34,6 +34,8 @@ from ai_agent_project.agent.research_file_store import FileResearchRunStore
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.workspace import FilesystemWorkspaceInspector
 from ai_agent_project.agent.workspace_acceptance import WorkspaceAcceptanceValidator
+from ai_agent_project.improvement.context import ImprovementAwareApplication
+from ai_agent_project.improvement.service import build_improvement_service
 from ai_agent_project.llm.config import ProviderConfig, ProviderConfigService
 from ai_agent_project.llm.providers.openai import OpenAIClient
 from ai_agent_project.llm.providers.openai_codebase_analyzer import (
@@ -133,6 +135,7 @@ def create_default_project_application_service(
     provider_config: ProviderConfig | None = None,
     agent_service: AgentService | None = None,
     store: ProjectRunStore | None = None,
+    improvement_service=None,
 ) -> ProjectApplicationService:
     """Compose production planning and lifecycle services with an injected store."""
     provider_config = ProviderConfigService().resolve(provider_config)
@@ -164,12 +167,21 @@ def create_default_project_application_service(
         OpenAIProjectPlanner(config=provider_config),
         project_execution_service,
     )
-    return ProjectApplicationService(
+    application = ProjectApplicationService(
         project_runner,
         project_execution_service,
         store if store is not None else InMemoryProjectRunStore(),
         OpenAIProjectPlanReviser(config=provider_config),
         upgrade_runner,
+    )
+
+    return ImprovementAwareApplication(
+        application,
+        improvement_service
+        or build_improvement_service(
+            developer_reader=application._store, provider_config=provider_config
+        ),
+        "developer",
     )
 
 
@@ -195,6 +207,7 @@ def create_default_research_application_service(
     *,
     provider_config: ProviderConfig | None = None,
     store: InMemoryResearchRunStore | FileResearchRunStore | None = None,
+    improvement_service=None,
 ) -> ResearchApplicationService:
     """Compose real OpenAI planning, retrieval, and synthesis without fallback."""
     provider_config = ProviderConfigService().resolve(provider_config)
@@ -206,7 +219,7 @@ def create_default_research_application_service(
         OpenAIResearchDiscoverySynthesizer(config=provider_config),
         FilesystemWorkspaceInspector(resolved_workspace_root),
     )
-    return ResearchApplicationService(
+    application = ResearchApplicationService(
         discovery,
         store if store is not None else InMemoryResearchRunStore(),
         OpenAIResearchPlanGenerator(config=provider_config),
@@ -215,4 +228,13 @@ def create_default_research_application_service(
         OpenAIResearchResultAnalyzer(config=provider_config),
         OpenAIResearchResultSynthesizer(config=provider_config),
         OpenAIResearchPaperMaterialsGenerator(config=provider_config),
+    )
+
+    return ImprovementAwareApplication(
+        application,
+        improvement_service
+        or build_improvement_service(
+            researcher_reader=application._store, provider_config=provider_config
+        ),
+        "researcher",
     )

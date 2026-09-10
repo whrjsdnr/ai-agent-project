@@ -1028,3 +1028,11 @@ organizational application-control policy may block them. Do not disable those
 protections. Production releases should use trusted code signing. See
 [distribution verification and limitations](PHASE_6D_DESKTOP_DISTRIBUTION.md) for
 the exact local versus native Windows acceptance status.
+
+## Human-Governed Self-Improvement
+
+The desktop **Improvements** page supports explicit run evaluation, pending candidate review, user approval/rejection, rule enable/disable, and feedback. Approved experience-based guidance is bounded and applied to future provider-backed operations. Evaluation uses your configured provider; refresh and feedback do not call it. Developer approval checkpoints and Researcher’s no-execution policy remain authoritative.
+
+This is context-level adaptation, not fine-tuning, RL, autonomous source modification or automatic experimentation. Data is stored under the centralized application data directory’s `improvements` folder (Linux XDG/home; Windows LocalAppData). API keys remain session-only.
+
+CLI: `uv run ai-agent improvement candidates`, `rules`, `evaluate developer RUN_ID`, `evaluate researcher RUN_ID`, `approve CANDIDATE_ID`, `reject CANDIDATE_ID`, `enable RULE_ID`, and `disable RULE_ID`. See [Phase 7 behavior and verification](PHASE_7_SELF_IMPROVEMENT.md) for scopes, safety, API operations, observed impact and limitations.
