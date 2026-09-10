@@ -29,6 +29,23 @@ class FileProjectStore:
         if not self._root.is_dir():
             raise ProjectSessionStorageError("Project store root is not a directory")
 
+    def list_projects(self) -> tuple[ProjectSession, ...]:
+        """Read snapshots only; lock and temporary files are not snapshots."""
+        try:
+            projects = tuple(
+                self._read(path.stem, self._path_for(path.stem))
+                for path in self._root.glob("*.json")
+            )
+        except OSError:
+            raise ProjectSessionStorageError("Cannot list project snapshots") from None
+        return tuple(
+            sorted(
+                projects,
+                key=lambda project: (project.created_at, project.project_id),
+                reverse=True,
+            )
+        )
+
     def create(self, project_id: str, project: ProjectSession) -> None:
         path = self._path_for(project_id)
         if path.exists():

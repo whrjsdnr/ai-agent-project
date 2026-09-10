@@ -38,6 +38,8 @@ class ProjectSessionStateError(ProjectSessionError):
 
 
 class ProjectSessionStore(Protocol):
+    def list_projects(self) -> tuple[ProjectSession, ...]: ...
+
     def create(self, project_id: str, project: ProjectSession) -> None: ...
 
     def get(self, project_id: str) -> ProjectSession | None: ...
@@ -80,6 +82,15 @@ class InMemoryProjectSessionStore:
     def __init__(self) -> None:
         self._projects: dict[str, ProjectSession] = {}
         self._bind_lock = Lock()
+
+    def list_projects(self) -> tuple[ProjectSession, ...]:
+        return tuple(
+            sorted(
+                self._projects.values(),
+                key=lambda project: (project.created_at, project.project_id),
+                reverse=True,
+            )
+        )
 
     def create(self, project_id: str, project: ProjectSession) -> None:
         if project_id in self._projects:
@@ -141,6 +152,13 @@ class ProjectSessionService:
         self._mode_proposer = mode_proposer
         self._developer_run_reader = developer_run_reader
         self._research_run_reader = research_run_reader
+
+    def list_projects(self) -> tuple[StoredProjectSession, ...]:
+        """Read existing sessions, newest first with an identity tie breaker."""
+        return tuple(
+            StoredProjectSession(id=project.project_id, project=project)
+            for project in self._store.list_projects()
+        )
 
     def create_project_request(
         self, original_request: str, *, title: str | None = None
