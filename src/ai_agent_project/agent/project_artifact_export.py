@@ -74,6 +74,9 @@ def _absolute_without_symlink_resolution(path: Path) -> Path:
 
 def _write_new_file_atomically(destination: Path, content: bytes) -> None:
     _validate_destination(destination)
+    if os.name == "nt":
+        _write_windows_file(destination, content)
+        return
     parent_fd = _open_parent_without_symlinks(destination.parent)
     temporary_name = f".{destination.name}.{uuid4().hex}.tmp"
     temporary_fd: int | None = None
@@ -192,3 +195,28 @@ def _media_type(artifact_format: ProjectArtifactFormat) -> str:
     if artifact_format is ProjectArtifactFormat.MARKDOWN:
         return MARKDOWN_MEDIA_TYPE
     return TEXT_MEDIA_TYPE
+
+
+def _write_windows_file(destination: Path, content: bytes) -> None:
+    """Same atomic no-overwrite policy using protected Windows parent handles."""
+    from tempfile import NamedTemporaryFile
+
+    from ai_agent_project.windows_files import protected_directory_chain
+
+    temporary = None
+    try:
+        with protected_directory_chain(destination.parent):
+            try:
+                with NamedTemporaryFile(dir=destination.parent, delete=False) as stream:
+                    temporary = Path(stream.name)
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.link(temporary, destination)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+    except OSError:
+        raise ProjectArtifactExportError(
+            "Cannot export to this destination; use a new file in a writable folder without links."
+        ) from None

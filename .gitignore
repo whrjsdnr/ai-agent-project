@@ -11,3 +11,6 @@ wheels/
 
 # Local environment variables and secrets
 .env
+
+# Packaging outputs (configuration under packaging/ remains tracked)
+/packaging/windows/installer/Output/

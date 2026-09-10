@@ -46,6 +46,7 @@ from ai_agent_project.llm.providers.openai_project_mode_proposer import (
     OpenAIProjectModeProposer,
 )
 from ai_agent_project.llm.runtime import provider_client_scope
+from ai_agent_project.paths import desktop_workspace
 
 
 @dataclass
@@ -91,7 +92,9 @@ class LazyApplication:
 def build_desktop_application(
     root: Path | None = None, workspace: Path | None = None
 ) -> DesktopService:
-    workspace = workspace or Path.cwd()
+    workspace = workspace or (
+        root / "workspaces" / "default" if root else desktop_workspace()
+    )
     developers = FileProjectRunStore(
         root / "developers" if root else default_project_run_store_root(),
         workspace_root=workspace,

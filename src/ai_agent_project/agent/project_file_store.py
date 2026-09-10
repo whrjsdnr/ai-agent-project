@@ -12,6 +12,7 @@ from ai_agent_project.agent.project_application import (
     ProjectRunNotFoundError,
 )
 from ai_agent_project.agent.project_runner import ProjectRun
+from ai_agent_project.paths import runtime_paths
 
 
 class ProjectRunStorageError(ProjectRunError):
@@ -168,4 +169,4 @@ class FileProjectRunStore:
 
 def default_project_run_store_root() -> Path:
     """Return the Linux-friendly default storage location for CLI project runs."""
-    return Path.home() / ".local" / "share" / "ai-agent" / "project-runs"
+    return runtime_paths().data / "project-runs"

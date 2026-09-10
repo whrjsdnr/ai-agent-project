@@ -822,7 +822,7 @@ def _build_production_service(
     store: FileProjectRunStore,
 ) -> ProjectApplicationService:
     """Reuse the production composition root while swapping only persistence."""
-    from ai_agent_project.api.app import create_default_project_application_service
+    from ai_agent_project.composition import create_default_project_application_service
 
     return create_default_project_application_service(workspace, store=store)
 
@@ -1256,7 +1256,7 @@ def _build_production_research_service(
     workspace: Path, store: FileResearchRunStore
 ) -> ResearchApplicationService:
     """Reuse the API composition root with real web retrieval and CLI persistence."""
-    from ai_agent_project.api.app import create_default_research_application_service
+    from ai_agent_project.composition import create_default_research_application_service
 
     return create_default_research_application_service(workspace, store=store)
 
@@ -1264,7 +1264,7 @@ def _build_production_research_service(
 def _build_production_project_session_service(
     store: FileProjectStore,
 ) -> ProjectSessionService:
-    from ai_agent_project.api.app import create_default_project_session_service
+    from ai_agent_project.composition import create_default_project_session_service
 
     return create_default_project_session_service(
         store=store,

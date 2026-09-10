@@ -23,6 +23,8 @@ from pydantic import (
     field_validator,
 )
 
+from ai_agent_project.paths import runtime_paths
+
 DEFAULT_MODEL = "gpt-5-mini"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
@@ -87,11 +89,7 @@ class ProviderConfig(BaseModel):
 
 
 def default_provider_config_path() -> Path:
-    root = os.getenv("XDG_CONFIG_HOME")
-    directory = (
-        Path(root) if root and Path(root).is_absolute() else Path.home() / ".config"
-    )
-    return directory / "ai-agent" / "llm.json"
+    return runtime_paths().config / "llm.json"
 
 
 class ConnectionTestResult(BaseModel):

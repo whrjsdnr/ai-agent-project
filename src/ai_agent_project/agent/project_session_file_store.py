@@ -1,6 +1,5 @@
 """Atomic persistence for shallow project-session orchestration state."""
 
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -14,6 +13,8 @@ from ai_agent_project.agent.project_session_application import (
     ProjectSessionNotFoundError,
     _bind_developer_project,
 )
+from ai_agent_project.file_lock import exclusive_file_lock
+from ai_agent_project.paths import runtime_paths
 
 
 class ProjectSessionStorageError(ProjectSessionError):
@@ -78,8 +79,7 @@ class FileProjectStore:
         try:
             # Keep this inode stable: JSON snapshots are replaced atomically.
             # Closing releases the lock; never unlink a lock another caller may use.
-            with path.with_suffix(".lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
+            with exclusive_file_lock(path.with_suffix(".lock")):
                 project = self.get(project_id)
                 if project is None:
                     raise ProjectSessionNotFoundError(
@@ -158,4 +158,4 @@ class FileProjectStore:
 
 
 def default_project_store_root() -> Path:
-    return Path.home() / ".local" / "share" / "ai-agent" / "projects"
+    return runtime_paths().data / "projects"

@@ -12,6 +12,7 @@ from ai_agent_project.agent.research_application import (
     ResearchRunError,
     ResearchRunNotFoundError,
 )
+from ai_agent_project.paths import runtime_paths
 
 
 class ResearchRunStorageError(ResearchRunError):
@@ -121,4 +122,4 @@ class FileResearchRunStore:
 
 def default_research_run_store_root() -> Path:
     """Return the user-local default root for CLI research-run snapshots."""
-    return Path.home() / ".local" / "share" / "ai-agent" / "research-runs"
+    return runtime_paths().data / "research-runs"

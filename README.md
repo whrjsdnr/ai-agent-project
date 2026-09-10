@@ -988,3 +988,43 @@ Artifacts offer safe JSON preview, copy and no-overwrite JSON export.
 
 Verification and Phase 6D deferrals are documented in
 [PHASE_6C_PYSIDE6_DESKTOP_UI.md](PHASE_6C_PYSIDE6_DESKTOP_UI.md).
+
+## Windows distribution
+
+The Windows product is a per-user **AI Agent** installation, launched from the
+Start Menu or optional desktop shortcut. End users do not need Python, uv, a
+browser or a server. Portable users must keep the entire `AI-Agent` directory
+alongside `AI-Agent.exe`; do not distribute the executable by itself.
+
+Builders need Windows 10 (1809+) / Windows 11 x64, uv, and Inno Setup 6 for the
+installer. From a checkout on a **local Windows drive** (not a WSL UNC path):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging/windows/build.ps1
+powershell -ExecutionPolicy Bypass -File packaging/windows/build.ps1 -Installer
+```
+
+The script obtains Python 3.12 through uv, syncs locked dependencies into an
+isolated build environment, runs packaging tests, and builds/audits the app.
+Outputs: `dist/AI-Agent/AI-Agent.exe` and, with `-Installer`,
+`dist/installer/AI-Agent-Setup.exe`. Alternatively, run the manual **Windows desktop
+distribution** GitHub Actions workflow and download its two artifacts. Development
+launch remains `uv run ai-agent-desktop`.
+
+Windows config is `%APPDATA%/ai-agent/llm.json`; projects/research/handoffs are
+under `%LOCALAPPDATA%/ai-agent/data`, and the frozen app's default workspace is
+`data/workspaces/default`. Linux uses the corresponding XDG config/data/cache
+roots, with standard home-directory fallbacks. Installation and ordinary uninstall
+leave user config and project data intact.
+
+Enter your compatible endpoint, model, timeout and session API key in Settings.
+The endpoint must support the Responses API and the structured outputs used by
+this application. Custom endpoints remain authoritative. Keys are not saved in
+normal JSON configuration. Generated projects may still need their own external
+build/test toolchains; these are not application runtime dependencies.
+
+Development builds are **unsigned**: Windows may display SmartScreen warnings or
+organizational application-control policy may block them. Do not disable those
+protections. Production releases should use trusted code signing. See
+[distribution verification and limitations](PHASE_6D_DESKTOP_DISTRIBUTION.md) for
+the exact local versus native Windows acceptance status.

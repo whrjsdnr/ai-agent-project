@@ -10,6 +10,7 @@ from ai_agent_project.agent.project_handoff_application import (
     ProjectHandoffAlreadyExistsError,
     ProjectHandoffError,
 )
+from ai_agent_project.paths import runtime_paths
 
 
 class ProjectHandoffStorageError(ProjectHandoffError):
@@ -110,4 +111,4 @@ class FileProjectHandoffStore:
 
 
 def default_project_handoff_store_root() -> Path:
-    return Path.home() / ".local" / "share" / "ai-agent" / "handoffs"
+    return runtime_paths().data / "handoffs"
