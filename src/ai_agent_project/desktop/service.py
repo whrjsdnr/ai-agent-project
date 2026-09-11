@@ -6,6 +6,7 @@ only inspect snapshots. Mutations invoke one explicitly named application comman
 
 from pathlib import Path
 
+from ai_agent_project.agent.checkpoint import CheckpointDecision
 from ai_agent_project.agent.hybrid_coordination_application import (
     HybridCoordinationService,
 )
@@ -14,6 +15,7 @@ from ai_agent_project.agent.project_action_application import (
     ApproveResearchPlanCommand,
     ContinueDeveloperCommand,
     ContinueResearcherCommand,
+    DecideDeveloperCheckpointCommand,
     ProjectActionService,
     ProvideResearchResultsCommand,
     SelectResearchDirectionCommand,
@@ -81,7 +83,10 @@ def _pending(action: ProjectPendingAction) -> DesktopPendingActionView:
     return DesktopPendingActionView(
         action_type=name,
         domain=domain,
-        title=name.replace("_", " ").capitalize(),
+        title="Review Developer checkpoint"
+        if name == "continue_developer"
+        and action.source_status == "awaiting_checkpoint"
+        else name.replace("_", " ").capitalize(),
         description=action.message,
         requires_payload=payload is not None,
         payload_kind=payload,
@@ -353,6 +358,16 @@ class DesktopService:
     def continue_developer(self, project_id: str) -> None:
         self._actions.continue_developer(
             ContinueDeveloperCommand(project_id=project_id)
+        )
+
+    @desktop_boundary
+    def decide_developer_checkpoint(
+        self, project_id: str, decision: CheckpointDecision, note: str | None = None
+    ) -> None:
+        self._actions.decide_developer_checkpoint(
+            DecideDeveloperCheckpointCommand(
+                project_id=project_id, decision=decision, note=note
+            )
         )
 
     @desktop_boundary

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ai_agent_project.agent.checkpoint import CheckpointDecision
 from ai_agent_project.agent.research import ResearchResultSubmission, WorkMode
 from ai_agent_project.agent.upgrade import ProjectMode
 from ai_agent_project.desktop import DesktopService
@@ -27,6 +28,7 @@ from ai_agent_project.desktop_app.application import PresentationState
 from ai_agent_project.desktop_app.dialogs import (
     CreatedRunDialog,
     CreateProjectDialog,
+    DeveloperCheckpointDialog,
     DirectionSelectionDialog,
     ModeConfirmationDialog,
     ResearchResultsDialog,
@@ -274,6 +276,22 @@ class MainWindow(QMainWindow):
                     )
                     self.submit(
                         lambda: self.service.provide_research_results(pid, submission)
+                    )
+            elif (
+                action == "continue_developer"
+                and view.developer.status == "awaiting_checkpoint"
+            ):
+                dialog = DeveloperCheckpointDialog(self)
+                if (
+                    dialog.exec() == QDialog.DialogCode.Accepted
+                    and dialog.decision.currentData()
+                ):
+                    decision = CheckpointDecision(dialog.decision.currentData())
+                    note = dialog.note.toPlainText().strip() or None
+                    self.submit(
+                        lambda: self.service.decide_developer_checkpoint(
+                            pid, decision, note
+                        )
                     )
             elif action in (
                 "approve_developer_plan",

@@ -5,6 +5,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ai_agent_project.agent.checkpoint import CheckpointDecision
 from ai_agent_project.agent.project_application import StoredProjectRun
 from ai_agent_project.agent.project_session import (
     ProjectPendingAction,
@@ -62,6 +63,11 @@ class ContinueDeveloperCommand(BaseModel):
     project_id: str = Field(min_length=1)
 
 
+class DecideDeveloperCheckpointCommand(ContinueDeveloperCommand):
+    decision: CheckpointDecision
+    note: str | None = None
+
+
 class ContinueResearcherCommand(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -92,6 +98,14 @@ class DeveloperPlanApprover(Protocol):
     def approve_plan(self, project_run_id: str) -> StoredProjectRun: ...
 
     def execute_current_phase(self, project_run_id: str) -> StoredProjectRun: ...
+
+    def decide_current_phase(
+        self,
+        project_run_id: str,
+        decision: CheckpointDecision,
+        *,
+        note: str | None = None,
+    ) -> StoredProjectRun: ...
 
 
 class ResearchCheckpointService(Protocol):
@@ -203,6 +217,26 @@ class ProjectActionService:
         if run_id is None:
             raise ProjectActionError("Developer continuation action has no linked run")
         stored = self._developer_plans.execute_current_phase(run_id)
+        return self._result(
+            command.project_id,
+            previous,
+            ProjectActionSource.DEVELOPER,
+            run_id,
+            stored.project_run.execution_state.status.value,
+        )
+
+    def decide_developer_checkpoint(
+        self, command: DecideDeveloperCheckpointCommand
+    ) -> ProjectActionResult:
+        previous = self._require_action(
+            command.project_id, ProjectPendingActionType.CONTINUE_DEVELOPER
+        )
+        run_id = previous.developer_run_id
+        if run_id is None:
+            raise ProjectActionError("Developer checkpoint has no linked run")
+        stored = self._developer_plans.decide_current_phase(
+            run_id, command.decision, note=command.note
+        )
         return self._result(
             command.project_id,
             previous,

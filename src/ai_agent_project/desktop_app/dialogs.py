@@ -119,3 +119,28 @@ class CreatedRunDialog(InputDialog):
                 "The run is saved. Binding requires your explicit confirmation below."
             )
         )
+
+
+class DeveloperCheckpointDialog(InputDialog):
+    """Collect an explicit decision; the existing checkpoint service authorizes it."""
+
+    def __init__(self, parent=None):
+        from ai_agent_project.agent.checkpoint import CheckpointDecision
+
+        super().__init__(
+            "Review Developer Checkpoint", "Submit Checkpoint Decision", parent
+        )
+        self.decision = QComboBox()
+        self.decision.addItem("Choose a decision", None)
+        for choice in CheckpointDecision:
+            self.decision.addItem(choice.value.replace("_", " ").title(), choice.value)
+        self.note = QPlainTextEdit()
+        self.form.addRow(
+            QLabel("Review phase progress and acceptance artifacts before deciding.")
+        )
+        self.form.addRow("Decision", self.decision)
+        self.form.addRow("Optional note", self.note)
+        self.confirm.setEnabled(False)
+        self.decision.currentIndexChanged.connect(
+            lambda _: self.confirm.setEnabled(self.decision.currentData() is not None)
+        )

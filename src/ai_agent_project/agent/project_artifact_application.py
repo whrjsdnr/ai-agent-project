@@ -375,9 +375,23 @@ def _entry(
         title=title,
         media_types=supported_media_types(artifact_type),
     )
+    # AgentState contains private conversations, tool arguments/results and
+    # provider context. Keep it in the historical run, never in public artifacts.
+    exclude = None
+    if artifact_type is ProjectArtifactType.EXECUTION_STATE:
+        exclude = {
+            "phase_records": {
+                "__all__": {
+                    "execution": {
+                        "agent_run": True,
+                        "repair_attempts": {"__all__": {"agent_run": True}},
+                    }
+                }
+            }
+        }
     return _ArtifactEntry(
         descriptor=descriptor,
-        content=content.model_dump(mode="json"),
+        content=content.model_dump(mode="json", exclude=exclude),
     )
 
 
