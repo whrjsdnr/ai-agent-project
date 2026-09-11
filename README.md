@@ -1,1038 +1,714 @@
-# AI Agent Project
+Human-Governed AI Agent Desktop Platform
 
-AI Agent Project는 사용자의 프로젝트 요구사항을 바탕으로 **명세 생성 → 구현 계획 수립 → 단계별 코드 실행 → 요구사항 검증 → 체크포인트 승인 → 프로젝트 완료**까지 수행하는 lifecycle 기반 AI coding agent입니다.
+개발·리서치 업무를 계획하고, 사용자 승인에 따라 실행하며,
+작업 경험과 피드백을 다음 실행에 반영하는 로컬 AI Agent Desktop Platform
 
-CLI와 FastAPI 인터페이스를 제공하며, CLI에서는 프로젝트 실행 상태를 JSON snapshot으로 영속화하여 프로세스가 종료된 이후에도 이전 프로젝트 상태를 복원할 수 있습니다.
+Overview
 
----
+기존 LLM은 코드와 문서를 생성하는 데 뛰어나지만, 장기간의 실제 프로젝트에서는 단순 대화만으로 다음 문제를 안정적으로 해결하기 어렵습니다.
 
-## 주요 기능
+대화 종료 후 작업 상태 유지
 
-* 자연어 프로젝트 요구사항 기반 Specification 생성
-* Specification 기반 Implementation Plan 생성
-* 요구사항과 구현 작업 간 Traceability 검증
-* 프로젝트를 여러 Phase로 분할하여 단계별 실행
-* OpenAI 기반 Coding Agent
-* Tool Calling 기반 파일 및 Shell 작업
-* Workspace 탐색 및 변경
-* Requirement Acceptance Validation
-* 실패한 요구사항에 대한 Repair 처리
-* Phase별 Checkpoint
-* 명시적 lifecycle decision
+실패 후 정확한 재개 지점 관리
 
-  * `approve`
-  * `retry`
-  * `request-changes`
-  * `stop`
-* CLI 기반 프로젝트 실행
-* FastAPI 기반 Project Lifecycle API
-* CLI Project Run JSON 영속 저장
-* 프로젝트 실행 상태 복원
-* Unit / Integration / E2E 테스트
+계획과 실제 실행 권한의 분리
 
----
+사용자 승인 기반의 단계별 진행
 
-# Architecture
+Developer / Researcher 간 결과물 연계
 
-전체 프로젝트 실행 흐름은 다음과 같습니다.
+과거 실패와 피드백의 체계적인 재사용
 
-```text
-User Project Request
-        │
-        ▼
-Specification
-        │
-        ▼
+Desktop Application 수준의 배포 및 운영
+
+이 프로젝트는 이러한 문제를 해결하기 위해 LLM의 생성 능력과 애플리케이션의 실행 권한을 분리하고,
+Human-in-the-Loop, Persistent State, Artifact Handoff, Human-Governed Self-Improvement를 중심으로 설계했습니다.
+
+Core Principle
+
+LLM Generated Data ≠ Authoritative State
+
+이 프로젝트에서 가장 중요한 설계 원칙입니다.
+
+LLM은 시스템 상태를 직접 결정하지 않습니다.
+
+LLM
+ │
+ │ Structured Proposal
+ ▼
+Validation
+ │
+ ▼
+Trusted Application
+ │
+ ▼
+Authoritative State
+
+LLM이 생성한 응답은 제안(Proposal) 으로 취급하고,
+
+Schema Validation
+
+Workflow Invariant Validation
+
+Application Policy
+
+User Approval
+
+을 거쳐 Trusted Application이 최종 상태를 확정합니다.
+
+Human Approval Boundary
+
+PLAN
+ ↓
+USER APPROVAL
+ ↓
+EXECUTE ONE PHASE
+ ↓
+CHECKPOINT
+ ↓
+USER DECISION
+ ↓
+CONTINUE
+
+중요한 상태 변경과 실행은 명시적인 사용자 결정을 요구합니다.
+
+Main Features
+
+1. Developer Agent
+
+개발 요청을 분석하고 구현 계획을 생성한 뒤, 사용자 승인에 따라 한 단계씩 작업을 진행합니다.
+
+Development Request
+        ↓
+Requirement Analysis
+        ↓
 Implementation Plan
-        │
-        ▼
-Project Run
-        │
-        ▼
-┌───────────────────────┐
-│       Phase P1        │
-│                       │
-│  Agent Execution      │
-│        │              │
-│        ▼              │
-│  Tool Calls           │
-│        │              │
-│        ▼              │
-│  Workspace Changes    │
-│        │              │
-│        ▼              │
-│ Requirement Validation│
-│        │              │
-│        ▼              │
-│ Repair (if required)  │
-└──────────┬────────────┘
-           │
-           ▼
-      Checkpoint
-           │
-    ┌──────┼───────────────┐
-    │      │        │      │
- approve retry request   stop
-                changes
-    │
-    ▼
+        ↓
+USER APPROVAL
+        ↓
+Execute Current Phase
+        ↓
+Validation
+        ↓
+Checkpoint
+        ↓
+USER DECISION
+        ↓
 Next Phase
+
+NEW Mode
+
+새로운 프로젝트에 대해 요구사항 분석부터 구현 계획과 단계별 개발까지 진행합니다.
+
+UPGRADE Mode
+
+기존 프로젝트를 대상으로 다음 순서를 강제합니다.
+
+ANALYZE → PLAN → USER APPROVAL → MODIFY
+
+Developer Features
+
+Plan Revision
+
+Persistent Project State
+
+Phase Checkpoint
+
+Explicit User Approval
+
+Workspace Safety
+
+Validation
+
+Rollback-oriented workflow
+
+Upgrade Analysis
+
+2. Researcher Agent
+
+Researcher Agent는 연구를 대신 실행하는 Agent가 아니라,
+연구 탐색·방향 결정 지원·연구 계획·결과 분석을 담당하는 Agent입니다.
+
+Research Request
+      ↓
+Preliminary Research
+      ↓
+Related Work / Landscape
+      ↓
+Direction Candidates
+      ↓
+USER SELECTS DIRECTION
+      ↓
+Research Plan
+      ↓
+USER APPROVAL
+      ↓
+Code / Experiment Scaffold
+      ↓
+USER EXECUTES EXPERIMENT
+      ↓
+Result Intake
+      ↓
+Result Analysis
+      ↓
+Research Synthesis
+      ↓
+Paper Materials
+
+Researcher Agent가 하지 않는 것
+
+Shell Command 실행
+
+Experiment 자동 실행
+
+Model Training
+
+사용자 Server / Environment 제어
+
+연구 방향 자동 확정
+
+Researcher Agent가 담당하는 것
+
+Research Discovery
+
+Related Work / Landscape 정리
+
+Research Direction Candidate 생성
+
+Research Planning
+
+Code / Configuration / Scaffold 생성
+
+User-Supplied Result Intake
+
+Result Analysis
+
+Research Synthesis
+
+Paper Material Preparation
+
+연구 방향은 Agent가 결정하지 않고 반드시 사용자가 선택합니다.
+
+3. Hybrid Workflow
+
+Developer와 Researcher를 하나의 거대한 workflow로 합치지 않습니다.
+
+두 Agent는 독립적인 권한과 상태를 유지하고, 사용자가 선택한 Research Artifact만 명시적으로 Developer Context로 전달합니다.
+
+RESEARCHER
     │
+    │ Selected Artifact
     ▼
-   ...
-    │
-    ▼
-Completed
-```
+┌─────────────────────────┐
+│ Explicit Artifact       │
+│ Handoff                 │
+│                         │
+│ artifact_id             │
+│ source_run_id           │
+│ content_sha256          │
+│ purpose                 │
+└────────────┬────────────┘
+             │
+             ▼
+        DEVELOPER
 
-CLI와 FastAPI는 동일한 Project Application Service를 사용하지만 저장 방식은 다릅니다.
+Handoff는 다음 정보를 기반으로 무결성을 확인합니다.
 
-```text
-                 ProjectApplicationService
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-             CLI                     FastAPI
-              │                         │
-              ▼                         ▼
-    FileProjectRunStore      InMemoryProjectRunStore
-              │
-              ▼
-       JSON Snapshots
-```
+artifact_id
 
----
+source_run_id
 
-# Requirements
+content_sha256
 
-* Python 3.12+
-* `uv`
-* OpenAI API Key
+purpose
 
-주요 dependency:
+Agent Collaboration ≠ Shared Authority
 
-* FastAPI
-* OpenAI Python SDK
-* Pydantic
-* HTTPX
-* pytest
-* Ruff
+Agent는 정보를 공유할 수 있지만 서로의 workflow 권한을 대신 행사하지 않습니다.
 
----
+4. Human-Governed Self-Improvement
 
-# Installation
+이 프로젝트의 Self-Improvement는 Agent가 자신의 소스코드를 자동 수정하는 방식이 아닙니다.
 
-저장소를 clone합니다.
+Agent Run
+    ↓
+Result / Error / Feedback
+    ↓
+Evaluation
+    ↓
+Improvement Candidate
+    ↓
+HUMAN APPROVAL
+    ↓
+Approved Rule
+    ↓
+Future Agent Context
+    ↓
+Next Run
 
-```bash
-git clone <repository-url>
-cd ai-agent-project
-```
+과거 작업의 결과와 사용자 피드백에서 개선 후보를 생성하고,
+사용자가 승인한 Improvement만 이후 Agent Context에 제한적으로 반영합니다.
 
-의존성을 설치합니다.
+Safety Boundary
 
-```bash
-uv sync
-```
+다음 동작은 허용하지 않습니다.
 
-CLI가 정상적으로 등록됐는지 확인합니다.
+Self Source Modification
 
-```bash
-uv run ai-agent --help
-```
+Automatic Approval
 
-또는 활성화된 가상환경에서는:
+Automatic Fine-Tuning
 
-```bash
-ai-agent --help
-```
+Automatic Experiment Execution
 
----
+Credential Exposure
 
-# Environment Configuration
+Researcher Code Execution
 
-OpenAI API를 사용하기 위해 API Key를 환경변수로 설정합니다.
+Autonomous Workflow Progression
 
-Linux / macOS:
+Self-Improving, Not Self-Modifying
 
-```bash
-export OPENAI_API_KEY="your-api-key"
-```
+Architecture
 
-현재 shell에서 확인:
+┌──────────────────────────────────────────────────────┐
+│                  PySide6 Desktop UI                  │
+│                                                      │
+│ Dashboard · Projects · Developer · Researcher        │
+│ Hybrid · Artifacts · Improvements · Settings         │
+└─────────────────────────┬────────────────────────────┘
+                          │
+                   Desktop Facade
+                          │
+                  Project Orchestrator
+                          │
+             ┌────────────┼────────────┐
+             ▼            ▼            ▼
+       Developer       Researcher    Hybrid
+         Agent            Agent      Handoff
+             │            │
+             └──────┬─────┘
+                    ▼
+             LLM Provider Layer
+           OpenAI-Compatible API
 
-```bash
-test -n "$OPENAI_API_KEY" && echo "API key configured"
-```
+          ┌────────────────────┐
+          │ Persistence Store  │
+          └────────────────────┘
 
-보안을 위해 API Key를 코드나 Git 저장소에 직접 저장하지 않는 것을 권장합니다.
+          ┌────────────────────┐
+          │  Artifact System   │
+          └────────────────────┘
 
-예를 들어 `.env`를 사용하는 경우 `.gitignore`에 다음 항목을 추가합니다.
+                    ▲
+                    │
+       Human-Governed Improvement
 
-```gitignore
-.env
-```
+Architecture Characteristics
 
----
+UI / Domain Layer Separation
 
-# User LLM Provider Configuration (Phase 6A)
+Application Service 중심의 workflow 관리
 
-설정 서비스는 Desktop UI와 독립적입니다. CLI에서도 동일한 서비스를 사용합니다.
+OpenAI-Compatible Provider Abstraction
 
-```bash
-uv run ai-agent config llm set --base-url https://api.openai.com/v1 --model gpt-5-mini --timeout-seconds 90
-uv run ai-agent config llm show
-uv run ai-agent config llm test
-```
+Persistent Project / Research State
 
-`test`만 실제 provider 요청을 수행합니다. `show`와 `set`은 네트워크를 사용하지 않습니다.
-Custom endpoint는 `--base-url http://localhost:8000/v1 --model my-model`처럼 설정합니다.
-잘못된 URL, 모델 또는 provider 응답에 대해 OpenAI나 다른 모델로 fallback하지 않습니다.
+Explicit Human Checkpoint
 
-- 기본 설정 파일: `$XDG_CONFIG_HOME/ai-agent/llm.json` (절대 경로인 경우), 아니면 `~/.config/ai-agent/llm.json`.
-- 별도 파일로 CLI 설정을 검사하려면 `config llm --config-file PATH show|set|test`를 사용합니다. Workflow는 기본 사용자 설정 경로를 사용합니다.
-- 필드별 우선순위: 명시적으로 지정한 runtime 필드 > 저장된 필드 > 환경변수 > 기본값. 기존 constructor의 `model`, `api_key`, `request_timeout_seconds` 인자는 runtime override입니다.
-- 환경변수: `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_TIMEOUT_SECONDS`, `OPENAI_API_KEY`. 기본값은 OpenAI `/v1`, `gpt-5-mini`, timeout 90초입니다.
-- API key는 runtime 인자 또는 `OPENAI_API_KEY`에서만 읽습니다. 일반 JSON에 저장하지 않으며 repr/공개 serialization에서도 제외합니다. CLI에는 key 인자를 두지 않습니다.
-- 저장은 현재 유효한 비밀정보 제외 설정 전체를 기록합니다. 따라서 저장 후에는 해당 필드들이 환경변수보다 우선합니다.
-- 기존과 같이 `.env`는 애플리케이션이 직접 읽지 않습니다. 필요하면 launcher에서 환경으로 전달합니다 (`uv run --env-file .env ai-agent ...`).
-- URL에는 인증정보, query 또는 fragment를 넣지 않습니다. 인증은 API key header로만 전달합니다.
-- 요청 실패는 원문 오류/응답 body 없이 안전한 오류로 전달하며 자동 재시도는 하지 않습니다.
+Artifact-based Agent Collaboration
 
-Python UI/호출자는 `ProviderConfigService().save(config)`, `.resolve(config)`, `.test_connection(config)`를 사용할 수 있습니다.
-`ProviderConfig(api_key=..., base_url=..., model=..., timeout_seconds=...)`를 기존 provider의 `config=` 또는
-`create_default_*_service(..., provider_config=config)`에 전달할 수도 있습니다. 설정 변경은 새로 구성하는 서비스에 적용됩니다.
+Desktop / CLI / API 인터페이스 분리
 
-Developer, Researcher와 Hybrid는 모두 동일한 설정 경로를 사용합니다. 설정/credential은 workflow snapshot,
-artifact catalog, handoff나 provenance에 추가되지 않습니다. Connection test는 짧은 Responses 요청만 보내며 workflow를 만들거나 진행하지 않습니다.
+Local-first data management
 
-호환 endpoint에는 **Responses API** 지원이 필요합니다. Structured output, tool calling, Researcher web search 등은
-해당 workflow가 기존에 요구하던 기능을 endpoint가 지원해야 합니다. Connection test 성공이 모든 기능의 지원을 보장하지는 않습니다.
-Chat-Completions-only endpoint 변환, OS credential store, PySide6 UI 및 packaging은 이번 단계에 포함하지 않습니다.
+Desktop Application
 
-Provider-free acceptance:
+PySide6 기반의 Desktop Application을 제공합니다.
 
-```bash
-uv run pytest tests/llm/test_provider_config.py tests/integration/test_provider_config_acceptance.py -q
-```
+Pages
 
-실제 provider acceptance는 명시적인 요청이 있을 때만 실행합니다.
+Dashboard
 
----
+Projects
 
-# Quick Start
+Developer
 
-예제 프로젝트 요구사항이 다음 경로에 포함되어 있습니다.
+Researcher
 
-```text
-examples/todo_api.md
-```
+Hybrid
 
-테스트용 workspace를 생성합니다.
+Artifacts
 
-```bash
-mkdir -p /tmp/ai-agent-todo
-```
+Improvements
 
-프로젝트를 생성합니다.
+Settings
 
-```bash
-ai-agent project create examples/todo_api.md \
-  --workspace /tmp/ai-agent-todo
-```
+Desktop UI는 Agent Domain Logic을 직접 구현하지 않고, Desktop Facade / Application Service를 통해 기존 authoritative workflow를 사용합니다.
 
-예시 출력:
+LLM Provider Configuration
 
-```text
-Project run: 741a52a7-0ae4-468c-b165-0a0436fe8eb4
-Project: Todo API
-Status: ready
-Current phase: P1
-Phases: 3
-Workspace: /tmp/ai-agent-todo
-```
+OpenAI-Compatible API Provider를 지원합니다.
 
-출력된 Run ID를 이후 명령에서 사용합니다.
+사용자는 다음 설정을 지정할 수 있습니다.
 
----
+Base URL
 
-# CLI Usage
+Model
 
-## Project Create
+API Key
 
-Markdown 요구사항을 읽어 새로운 Project Run을 생성합니다.
+Timeout
 
-```bash
-ai-agent project create <plan-file> \
-  --workspace <workspace-path>
-```
+Configuration Policy
 
-예:
+Credential과 일반 configuration을 분리합니다.
 
-```bash
-ai-agent project create examples/todo_api.md \
-  --workspace /tmp/ai-agent-todo
-```
+일반 설정은 사용자 configuration directory에 저장하며, API Key는 일반 JSON 설정에 평문으로 저장하지 않는 방향으로 설계했습니다.
 
----
+Provider configuration precedence:
 
-## Project Status
+Runtime Configuration
+        ↓
+Saved Configuration
+        ↓
+Environment Variable
+        ↓
+Default
 
-현재 프로젝트 lifecycle 상태를 확인합니다.
+Artifact System
 
-```bash
-ai-agent project status <RUN_ID>
-```
+Developer / Researcher workflow에서 생성된 결과는 Artifact로 관리됩니다.
 
-예:
+Examples
 
-```bash
-ai-agent project status \
-  741a52a7-0ae4-468c-b165-0a0436fe8eb4
-```
+Developer
 
-예시:
+Specification
 
-```text
-Project: Todo API
-Run ID: 741a52a7-0ae4-468c-b165-0a0436fe8eb4
-Status: ready
-Workspace: /tmp/ai-agent-todo
-Current phase: P1
+Project Specification
 
-Phases:
-[ ] P1 Core API Implementation (attempts=0)
-[ ] P2 Automated Tests (attempts=0)
-[ ] P3 Documentation (README) (attempts=0)
-```
+Implementation Plan
 
-JSON 형식으로 확인할 수도 있습니다.
+Plan Revision
 
-```bash
-ai-agent project status <RUN_ID> --json
-```
+Execution State
 
----
+Upgrade Context
 
-## Execute Phase
+Researcher
 
-현재 Phase를 실행합니다.
+Research Request
 
-```bash
-ai-agent project execute <RUN_ID>
-```
+Discovery Report
 
-예시:
+Selected Direction
 
-```text
-Phase: P1 Core API Implementation
-Execution status: completed
-Requirements: passed:4 failed:0 unknown:0
-Repairs: 0
-Checkpoint: awaiting_decision
-Recommended decisions: approve, request_changes
-Workspace: /tmp/ai-agent-todo
-```
+Research Plan
 
-`execute`는 현재 phase만 실행합니다.
+Implementation Plan
 
-다음 phase로 자동 진행하지 않으며 checkpoint decision이 필요합니다.
+Generated File
 
----
+Research Results
 
-# Checkpoint Decisions
+Result Analysis
 
-Phase 실행이 완료되면 프로젝트는 checkpoint에서 사용자 결정을 기다립니다.
+Research Synthesis
 
-## Approve
+Paper Materials
 
-현재 Phase를 승인하고 다음 Phase로 진행합니다.
+Artifact 조회와 export는 workflow execution과 분리되며, read-only 작업이 hidden state mutation을 일으키지 않도록 설계했습니다.
 
-```bash
-ai-agent project approve <RUN_ID>
-```
+Security & Safety
 
-예:
+Final Product Audit에서 기능뿐 아니라 권한 경계와 filesystem safety를 검증했습니다.
 
-```text
-Project status: ready
-Current phase: P2
-Workspace: /tmp/ai-agent-todo
-```
+주요 보호 항목:
 
----
+Approval Bypass 방지
 
-## Retry
+.env / Secret Protection
 
-현재 Phase를 다시 실행하도록 설정합니다.
+Symlink 기반 workspace escape 차단
 
-```bash
-ai-agent project retry <RUN_ID>
-```
+Shell option-like path 검증
 
-메모를 함께 전달할 수도 있습니다.
+Artifact export path validation
 
-```bash
-ai-agent project retry <RUN_ID> \
-  --note "Validation failed. Retry implementation."
-```
+Agent internal transcript 노출 방지
 
----
+Researcher execution boundary
 
-## Request Changes
+Self-modification 방지
 
-현재 결과에 대한 변경을 요청합니다.
+Credential 노출 방지
 
-```bash
-ai-agent project request-changes <RUN_ID>
-```
+Tech Stack
 
-변경 내용을 전달할 수도 있습니다.
+Category
 
-```bash
-ai-agent project request-changes <RUN_ID> \
-  --note "Add validation for empty todo titles."
-```
+Technology
 
----
+Language
 
-## Stop
+Python 3.12
 
-프로젝트 실행을 중단합니다.
+LLM
 
-```bash
-ai-agent project stop <RUN_ID>
-```
+OpenAI-Compatible API
 
-이유를 함께 기록할 수도 있습니다.
+Validation
 
-```bash
-ai-agent project stop <RUN_ID> \
-  --note "Project cancelled."
-```
+Pydantic
 
----
+API
 
-# Typical Lifecycle
-
-일반적인 프로젝트 실행은 다음 패턴을 반복합니다.
-
-```bash
-ai-agent project create plan.md --workspace ./workspace
-```
-
-새 Project Run은 즉시 실행되지 않고 `awaiting_plan_approval` 상태가 됩니다.
-먼저 생성된 plan을 검토합니다.
-
-```bash
-ai-agent project plan <RUN_ID>
-```
-
-Phase 구조나 책임을 조정하려면, 기존 requirement와 implementation task를 유지한 채
-plan만 반복해서 수정할 수 있습니다.
-
-```bash
-ai-agent project revise-plan <RUN_ID> \
-  --note "Move automated tests before documentation and clarify phase responsibilities."
-```
-
-수정이 끝나면 명시적으로 plan을 승인합니다. 이 명령은 Phase를 실행하지 않습니다.
-
-```bash
-ai-agent project approve-plan <RUN_ID>
-```
-
-```bash
-ai-agent project status <RUN_ID>
-```
-
-```bash
-ai-agent project execute <RUN_ID>
-```
-
-결과를 확인하고:
-
-```bash
-ai-agent project approve <RUN_ID>
-```
-
-다음 Phase 실행:
-
-```bash
-ai-agent project execute <RUN_ID>
-```
-
-다시 승인:
-
-```bash
-ai-agent project approve <RUN_ID>
-```
-
-모든 Phase가 승인될 때까지 이 과정을 반복합니다.
-
-최종적으로:
-
-```bash
-ai-agent project status <RUN_ID>
-```
-
-에서 프로젝트 완료 상태를 확인합니다.
-
-`revise-plan`은 아직 실행되지 않은 project plan의 phase grouping만 변경합니다.
-새 requirement 또는 implementation task가 필요한 요청은 향후 Specification Revision의
-범위입니다. 반면 `request-changes`는 이미 실행된 현재 Phase의 checkpoint에서 구현 변경을
-요청하는 별도 lifecycle 동작입니다.
-
-## Existing Project Upgrade
-
-기존 코드베이스는 새 프로젝트와 별도로 명시적인 upgrade run으로 시작합니다. 이 명령은
-workspace를 분석하고 upgrade specification, implementation plan, phase plan을 만들지만
-파일을 수정하거나 phase를 실행하지 않습니다.
-
-```bash
-ai-agent project upgrade upgrade.md --workspace ~/projects/todo-api
-ai-agent project analysis <RUN_ID>
-ai-agent project plan <RUN_ID>
-ai-agent project revise-plan <RUN_ID> --note "Separate migration work from API changes."
-ai-agent project approve-plan <RUN_ID>
-ai-agent project execute <RUN_ID>
-```
-
-Upgrade plan revision은 기존 implementation task의 phase 구성만 바꿉니다. 새로운 기능
-요구사항을 추가하는 specification revision은 아직 지원하지 않습니다.
-
----
-
-# Persistent CLI State
-
-CLI는 각 Project Run을 JSON snapshot으로 저장합니다.
-
-기본 저장 위치:
-
-```text
-~/.local/share/ai-agent/project-runs
-```
-
-각 Run은 UUID를 기준으로 저장됩니다.
-
-예:
-
-```text
-~/.local/share/ai-agent/project-runs/
-└── 741a52a7-0ae4-468c-b165-0a0436fe8eb4.json
-```
-
-저장되는 정보에는 다음과 같은 project lifecycle 정보가 포함됩니다.
-
-* Project Run ID
-* Project Specification
-* Project Plan
-* 현재 Phase
-* Phase execution 상태
-* Requirement validation 결과
-* Checkpoint 상태
-* Decision
-* Workspace absolute path
-
-따라서 다음처럼 서로 다른 CLI invocation에서도 동일한 프로젝트 상태를 유지할 수 있습니다.
-
-```text
-process 1
-    │
-    └── project create
-            │
-            ▼
-        JSON snapshot
-
-process 종료
-
-process 2
-    │
-    └── project status
-            │
-            ▼
-        snapshot restore
-
-process 3
-    │
-    └── project execute
-```
-
-snapshot 저장 시 temporary sibling file과 `fsync`, `os.replace()`를 이용하여 whole-snapshot atomic replacement 방식으로 저장합니다.
-
----
-
-# FastAPI
-
-CLI뿐 아니라 FastAPI 기반 프로젝트 lifecycle API도 제공합니다.
-
-FastAPI에서는 기본적으로 app-scoped `InMemoryProjectRunStore`를 사용합니다.
-
-```text
 FastAPI
-   │
-   ▼
-ProjectApplicationService
-   │
-   ▼
-InMemoryProjectRunStore
-```
 
-CLI는 동일한 production composition을 재사용하면서 `FileProjectRunStore`를 주입합니다.
+Desktop
 
-```text
-CLI
- │
- ▼
-ProjectApplicationService
- │
- ▼
-FileProjectRunStore
-```
+PySide6 / Qt
 
-이를 통해 business logic은 공유하면서 interface별 storage policy만 다르게 유지합니다.
+Testing
 
----
+Pytest
 
-# Agent Components
+Lint / Format
 
-주요 Agent 구성 요소는 다음과 같습니다.
+Ruff
 
-```text
-agent/
-├── acceptance.py
-├── acceptance_validator.py
-├── checkpoint.py
-├── coding_service.py
-├── phase_execution.py
-├── plan.py
-├── project.py
-├── project_application.py
-├── project_execution.py
-├── project_file_store.py
-├── project_runner.py
-├── service.py
-├── specification.py
-├── specification_parser.py
-├── state.py
-├── workspace.py
-└── workspace_acceptance.py
-```
+Packaging
 
-### Specification
+PyInstaller
 
-사용자의 원본 요구사항을 구조화된 Specification으로 변환합니다.
+Windows Installer
 
-### Implementation Plan
+Inno Setup
 
-Specification을 실제 실행 가능한 task와 phase로 변환합니다.
+CI/CD
 
-### Agent Service
+GitHub Actions
 
-LLM response를 처리하고 Tool Call을 실행하는 agent loop를 담당합니다.
+Project Structure
 
-### Coding Service
-
-workspace를 대상으로 실제 코드 작성 및 수정 작업을 수행합니다.
-
-### Acceptance Validation
-
-구현 결과가 Specification 요구사항을 만족하는지 검증합니다.
-
-### Repair
-
-검증 실패가 발생한 경우 요구사항을 만족시키기 위한 수정 작업을 수행합니다.
-
-### Checkpoint
-
-각 Phase가 종료된 뒤 자동으로 다음 단계로 이동하지 않고 사용자에게 decision을 요청합니다.
-
-### Project Application Service
-
-CLI와 API가 사용하는 프로젝트 lifecycle orchestration 계층입니다.
-
----
-
-# LLM Layer
-
-OpenAI 기반 provider 구현은 다음 위치에 있습니다.
-
-```text
-src/ai_agent_project/llm/
-├── base.py
-└── providers/
-    ├── openai.py
-    ├── openai_planner.py
-    ├── openai_project_planner.py
-    ├── openai_specification.py
-    └── structured_schema.py
-```
-
-각 단계의 역할을 분리하여 Specification, Planning, Agent execution 등을 독립적으로 구성합니다.
-
----
-
-# Tools
-
-Agent가 사용할 수 있는 Tool abstraction을 제공합니다.
-
-```text
-src/ai_agent_project/tools/
-├── base.py
-├── calculator.py
-├── file.py
-├── registry.py
-└── shell.py
-```
-
-현재 주요 tool:
-
-* File operations
-* Shell command execution
-* Calculator
-
-Shell command는 command policy를 통해 허용 가능한 명령인지 검사한 후 실행됩니다.
-
----
-
-# Project Structure
-
-```text
 ai-agent-project/
-├── examples/
-│   └── todo_api.md
-│
 ├── src/
 │   └── ai_agent_project/
 │       ├── agent/
-│       │   ├── acceptance.py
-│       │   ├── acceptance_validator.py
-│       │   ├── checkpoint.py
-│       │   ├── coding_service.py
-│       │   ├── phase_execution.py
-│       │   ├── plan.py
-│       │   ├── project.py
-│       │   ├── project_application.py
-│       │   ├── project_execution.py
-│       │   ├── project_file_store.py
-│       │   ├── project_runner.py
-│       │   ├── service.py
-│       │   ├── specification.py
-│       │   ├── specification_parser.py
-│       │   ├── state.py
-│       │   ├── workspace.py
-│       │   └── workspace_acceptance.py
+│       │   ├── developer/
+│       │   ├── researcher/
+│       │   ├── project orchestration
+│       │   ├── artifact
+│       │   └── handoff
 │       │
-│       ├── api/
-│       │   └── app.py
-│       │
+│       ├── desktop/
+│       ├── improvement/
 │       ├── llm/
-│       │   ├── base.py
-│       │   └── providers/
-│       │
-│       ├── tools/
-│       │   ├── base.py
-│       │   ├── calculator.py
-│       │   ├── file.py
-│       │   ├── registry.py
-│       │   └── shell.py
-│       │
-│       ├── cli.py
-│       ├── command_policy.py
-│       └── string_utils.py
+│       ├── api/
+│       └── cli.py
 │
 ├── tests/
 │   ├── agent/
-│   ├── api/
 │   ├── integration/
-│   ├── llm/
-│   └── tools/
+│   ├── desktop/
+│   ├── improvement/
+│   └── packaging/
 │
-├── pyproject.toml
-└── README.md
-```
+├── packaging/
+├── .github/
+│   └── workflows/
+└── pyproject.toml
 
----
+실제 repository의 세부 구조는 개발 과정에서 변경될 수 있습니다.
 
-# Testing
+Development Setup
 
-전체 테스트:
+Requirements
 
-```bash
-uv run pytest
-```
+Python 3.12+
 
-상세 출력:
+uv
 
-```bash
-uv run pytest -vv
-```
+Install
 
-특정 영역:
+git clone <repository-url>
+cd ai-agent-project
 
-```bash
-uv run pytest tests/agent
-```
+uv sync
 
-```bash
-uv run pytest tests/api
-```
+Run CLI
 
-```bash
-uv run pytest tests/integration
-```
+uv run ai-agent --help
 
-CLI 테스트:
+Run Desktop
 
-```bash
-uv run pytest tests/test_cli.py
-```
-
-File Store 테스트:
-
-```bash
-uv run pytest tests/agent/test_project_file_store.py
-```
-
----
-
-# Lint & Format
-
-Ruff 검사:
-
-```bash
-uv run ruff check .
-```
-
-자동 formatting:
-
-```bash
-uv run ruff format .
-```
-
-format 상태만 확인:
-
-```bash
-uv run ruff format --check .
-```
-
-Git whitespace 검사:
-
-```bash
-git diff --check
-```
-
----
-
-# End-to-End Acceptance Test
-
-실제 CLI를 이용하여 빈 workspace에서 Todo API 프로젝트를 생성하는 acceptance test를 수행했습니다.
-
-사용한 요구사항:
-
-```text
-examples/todo_api.md
-```
-
-Workspace:
-
-```text
-/tmp/ai-agent-todo
-```
-
-실제 lifecycle:
-
-```text
-Project Create
-      │
-      ▼
-P1 Core API Implementation
-      │
-      ├── requirements 4/4 passed
-      │
-      ▼
-Checkpoint
-      │
-    approve
-      │
-      ▼
-P2 Automated Tests
-      │
-      ├── requirements passed
-      │
-      ▼
-Checkpoint
-      │
-    approve
-      │
-      ▼
-P3 Documentation
-      │
-      ├── README generated
-      │
-      ▼
-Checkpoint
-      │
-    approve
-      │
-      ▼
-Completed
-```
-
-실제 workspace에는 다음과 같은 산출물이 생성되었습니다.
-
-```text
-app/
-├── __init__.py
-├── main.py
-├── schemas.py
-└── store.py
-
-tests/
-├── test_api.py
-└── test_todos.py
-
-README.md
-```
-
-이를 통해 다음 동작을 실제 CLI 환경에서 확인했습니다.
-
-* Project 생성
-* Process 종료 후 state restore
-* Phase 실행
-* Workspace 코드 생성
-* Requirement validation
-* Checkpoint 생성
-* 사용자 승인
-* 다음 Phase 이동
-* 테스트 생성
-* README 생성
-* 전체 Project lifecycle 완료
-
----
-
-# Current Limitations
-
-현재 버전은 MVP 단계이며 다음과 같은 제한사항이 있습니다.
-
-* CLI persistence는 local JSON file 기반입니다.
-* FastAPI Project Run은 기본적으로 memory에 저장됩니다.
-* 분산 실행을 위한 database-backed storage는 아직 제공하지 않습니다.
-* 여러 agent가 동시에 하나의 workspace를 수정하는 orchestration은 지원하지 않습니다.
-* 장기 실행 project를 위한 job queue / worker 구조는 아직 포함되어 있지 않습니다.
-* 사람의 checkpoint decision이 필요한 lifecycle을 기본으로 합니다.
-* 모델 품질과 실행 결과는 사용하는 LLM 및 프로젝트 요구사항에 영향을 받습니다.
-
----
-
-# Roadmap
-
-향후 확장 후보:
-
-* SQLite / PostgreSQL 기반 ProjectRunStore
-* Async background worker
-* Job Queue
-* WebSocket / SSE progress streaming
-* Web Dashboard
-* Project history UI
-* Phase execution log
-* Token / API cost tracking
-* Git branch / commit integration
-* Automatic rollback
-* Multi-agent orchestration
-* Human-in-the-loop approval UI
-* Docker sandbox execution
-* Remote workspace support
-* GitHub repository integration
-* CI/CD integration
-
----
-
-# Development Status
-
-Current version:
-
-```text
-0.1.0
-```
-
-현재 단계에서는 lifecycle 기반 AI coding agent의 MVP 구현과 CLI end-to-end acceptance validation까지 완료된 상태입니다.
-
-## Phase 6C — Native desktop application
-
-Launch the local PySide6 application:
-
-```bash
 uv run ai-agent-desktop
-```
 
-The existing `uv run ai-agent ...` CLI remains available. The desktop requires
-no browser or FastAPI server. Dashboard and project navigation work without a
-provider credential. Use Settings to save an OpenAI-compatible endpoint, model
-and timeout. A supplied API key remains in memory for this app session; it is
-never saved to the regular JSON settings file. Save Settings retains the runtime
-key; Test Connection tests the entered configuration without saving it.
+Run API
 
-Create a project to request a mode proposal, then explicitly confirm WorkMode
-and ProjectMode. For an unbound lane, create its run and explicitly confirm
-binding in the resulting dialog, or bind an existing run by ID. If binding is
-cancelled, copy the saved run ID to bind it later. Approvals, direction selection,
-result submission, continuation, handoff creation and bootstrap remain separate
-user actions. Researcher artifacts are never executed by the UI.
+FastAPI application은 프로젝트의 API entrypoint를 통해 실행할 수 있습니다.
 
-The desktop uses the existing local project/run/handoff stores and user provider
-configuration. New Developer runs use the launch working directory; continuing
-an existing Developer run honors its saved workspace. A running operation must
-finish before the window can close. Navigation and Refresh only read state.
-Artifacts offer safe JSON preview, copy and no-overwrite JSON export.
+uv run uvicorn ai_agent_project.api.app:app --reload
 
-Verification and Phase 6D deferrals are documented in
-[PHASE_6C_PYSIDE6_DESKTOP_UI.md](PHASE_6C_PYSIDE6_DESKTOP_UI.md).
+Testing
 
-## Windows distribution
+Full Test Suite
 
-The Windows product is a per-user **AI Agent** installation, launched from the
-Start Menu or optional desktop shortcut. End users do not need Python, uv, a
-browser or a server. Portable users must keep the entire `AI-Agent` directory
-alongside `AI-Agent.exe`; do not distribute the executable by itself.
+uv run pytest
 
-Builders need Windows 10 (1809+) / Windows 11 x64, uv, and Inno Setup 6 for the
-installer. From a checkout on a **local Windows drive** (not a WSL UNC path):
+Final Product Audit 기준:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File packaging/windows/build.ps1
-powershell -ExecutionPolicy Bypass -File packaging/windows/build.ps1 -Installer
-```
+Full Test Suite       755 passed / 12 skipped
+Broad Regression      547 passed / 12 skipped
 
-The script obtains Python 3.12 through uv, syncs locked dependencies into an
-isolated build environment, runs packaging tests, and builds/audits the app.
-Outputs: `dist/AI-Agent/AI-Agent.exe` and, with `-Installer`,
-`dist/installer/AI-Agent-Setup.exe`. Alternatively, run the manual **Windows desktop
-distribution** GitHub Actions workflow and download its two artifacts. Development
-launch remains `uv run ai-agent-desktop`.
+Final Acceptance       22 passed
+Self-Improvement       64 passed
+Desktop GUI            20 passed
+Desktop Facade         23 passed
+Packaging              25 passed
 
-Windows config is `%APPDATA%/ai-agent/llm.json`; projects/research/handoffs are
-under `%LOCALAPPDATA%/ai-agent/data`, and the frozen app's default workspace is
-`data/workspaces/default`. Linux uses the corresponding XDG config/data/cache
-roots, with standard home-directory fallbacks. Installation and ordinary uninstall
-leave user config and project data intact.
+Ruff                   PASS
+Formatting             PASS
+Linux Frozen Build     PASS
+Windows CI Build       PASS
+Windows Application    PASS
 
-Enter your compatible endpoint, model, timeout and session API key in Settings.
-The endpoint must support the Responses API and the structured outputs used by
-this application. Custom endpoints remain authoritative. Keys are not saved in
-normal JSON configuration. Generated projects may still need their own external
-build/test toolchains; these are not application runtime dependencies.
+Lint
 
-Development builds are **unsigned**: Windows may display SmartScreen warnings or
-organizational application-control policy may block them. Do not disable those
-protections. Production releases should use trusted code signing. See
-[distribution verification and limitations](PHASE_6D_DESKTOP_DISTRIBUTION.md) for
-the exact local versus native Windows acceptance status.
+uv run ruff check .
 
-## Human-Governed Self-Improvement
+Format Check
 
-The desktop **Improvements** page supports explicit run evaluation, pending candidate review, user approval/rejection, rule enable/disable, and feedback. Approved experience-based guidance is bounded and applied to future provider-backed operations. Evaluation uses your configured provider; refresh and feedback do not call it. Developer approval checkpoints and Researcher’s no-execution policy remain authoritative.
+uv run ruff format --check .
 
-This is context-level adaptation, not fine-tuning, RL, autonomous source modification or automatic experimentation. Data is stored under the centralized application data directory’s `improvements` folder (Linux XDG/home; Windows LocalAppData). API keys remain session-only.
+Windows Distribution
 
-CLI: `uv run ai-agent improvement candidates`, `rules`, `evaluate developer RUN_ID`, `evaluate researcher RUN_ID`, `approve CANDIDATE_ID`, `reject CANDIDATE_ID`, `enable RULE_ID`, and `disable RULE_ID`. See [Phase 7 behavior and verification](PHASE_7_SELF_IMPROVEMENT.md) for scopes, safety, API operations, observed impact and limitations.
+Desktop Application은 PyInstaller one-directory 방식으로 패키징합니다.
+
+Source
+  ↓
+PyInstaller
+  ↓
+Windows x64 Application
+  ↓
+GitHub Actions
+  ↓
+Inno Setup
+  ↓
+Windows Installer
+
+실제 Windows CI 결과물:
+
+AI-Agent-Windows-x64/
+└── AI-Agent.exe
+
+AI-Agent-Installer/
+└── AI-Agent-Setup.exe
+
+Windows GitHub Actions에서 다음 검증을 완료했습니다.
+
+Windows x64 Build
+
+PE Executable Verification
+
+Frozen GUI Acceptance
+
+Inno Setup Installer Build
+
+Artifact Upload
+
+실제 Windows 환경에서 application 실행도 확인했습니다.
+
+Data Paths
+
+Windows 배포 기준:
+
+Configuration
+%APPDATA%\ai-agent\llm.json
+
+Application Data
+%LOCALAPPDATA%\ai-agent\data
+
+Cache
+%LOCALAPPDATA%\ai-agent\cache
+
+사용자 데이터는 application binary와 분리하여 관리합니다.
+
+Design Decisions
+
+Why not fully autonomous?
+
+이 프로젝트의 목표는 가능한 많은 작업을 자동화하는 것이 아니라,
+잘못된 Agent 판단이 실제 시스템 변경으로 직결되지 않는 구조를 만드는 것입니다.
+
+따라서 다음 원칙을 사용합니다.
+
+LLM proposes
+User approves
+Application validates
+System executes
+
+Why separate Developer and Researcher?
+
+개발과 연구는 서로 다른 안전 경계가 필요합니다.
+
+Developer는 승인된 계획에 따라 workspace를 수정할 수 있음
+
+Researcher는 연구를 설계하고 결과를 분석하지만 실행 environment를 직접 제어하지 않음
+
+두 workflow를 분리함으로써 역할과 권한을 명확하게 유지합니다.
+
+Why artifact-based handoff?
+
+전체 Agent state를 공유하면 불필요한 내부 정보와 과거 context가 함께 전달될 수 있습니다.
+
+따라서 명시적으로 선택된 Artifact만 exact ID + digest 기반으로 전달합니다.
+
+Final Outcome
+
+이 프로젝트를 통해 단순한 Chat / Prompt Wrapper가 아니라 다음 요소를 포함한 AI Agent Platform을 구현했습니다.
+
+Persistent Workflow State
+
+Developer Agent
+
+Researcher Agent
+
+Hybrid Agent Coordination
+
+Human Approval Checkpoints
+
+Artifact Management
+
+Explicit Cross-Agent Handoff
+
+Human-Governed Self-Improvement
+
+Desktop Application
+
+Windows Packaging / Installer
+
+Automated Test / Release Pipeline
+
+Final Security & Product Audit
+
+LLM의 생성 능력은 활용하되, 상태·권한·승인은 애플리케이션과 사용자가 통제한다.
+
+Status
+
+Application Architecture        ✅
+Developer Agent                 ✅
+Researcher Agent                ✅
+Hybrid Workflow                 ✅
+Artifact System                 ✅
+Human-Governed Self-Improvement ✅
+PySide6 Desktop                 ✅
+Windows Packaging               ✅
+Windows Installer               ✅
+Windows CI                      ✅
+Windows Application Execution   ✅
+
+License
+
+This project is currently maintained as a personal portfolio project.
