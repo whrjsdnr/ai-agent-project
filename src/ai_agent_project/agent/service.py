@@ -43,7 +43,9 @@ class AgentService:
                     [response.tool_call] if response.tool_call is not None else []
                 )
                 if tool_calls:
-                    self._execute_tool_calls(state, tool_calls, response.provider_context)
+                    self._execute_tool_calls(
+                        state, tool_calls, response.provider_context
+                    )
                     continue
 
                 if response.final_answer is not None:
@@ -58,9 +60,13 @@ class AgentService:
                     state.status = AgentStatus.COMPLETED
                     return state
 
-                raise ValueError("LLM response must include a final answer or tool call")
+                raise ValueError(
+                    "LLM response must include a final answer or tool call"
+                )
 
-            raise RuntimeError(f"Maximum iteration limit ({self._max_iterations}) exceeded")
+            raise RuntimeError(
+                f"Maximum iteration limit ({self._max_iterations}) exceeded"
+            )
 
         except Exception as error:  # noqa: BLE001 - Agent runs must record all failures.
             state.status = AgentStatus.FAILED
@@ -75,7 +81,9 @@ class AgentService:
     ) -> None:
         """Record and execute all tool calls returned by one LLM response."""
         if len(state.tool_calls) + len(tool_calls) > self._max_tool_calls:
-            raise RuntimeError(f"Maximum tool call limit ({self._max_tool_calls}) exceeded")
+            raise RuntimeError(
+                f"Maximum tool call limit ({self._max_tool_calls}) exceeded"
+            )
 
         state.tool_calls.extend(tool_calls)
         state.messages.append(

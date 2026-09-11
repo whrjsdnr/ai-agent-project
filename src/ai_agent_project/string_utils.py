@@ -62,6 +62,6 @@ def is_digits_only(value: str) -> bool:
     # Check each character is between '0' and '9' inclusive. This excludes
     # non-ASCII digits such as full-width digits.
     for ch in value:
-        if ch < '0' or ch > '9':
+        if ch < "0" or ch > "9":
             return False
     return True

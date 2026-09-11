@@ -95,7 +95,9 @@ def test_absolute_path_is_blocked(file_tool: FileTool, operation: str) -> None:
     assert result.error == "Absolute paths are not allowed"
 
 
-def test_symlink_escape_is_blocked(file_tool: FileTool, workspace: Path, tmp_path: Path) -> None:
+def test_symlink_escape_is_blocked(
+    file_tool: FileTool, workspace: Path, tmp_path: Path
+) -> None:
     outside = tmp_path / "outside.txt"
     outside.write_text("private", encoding="utf-8")
     (workspace / "escape.txt").symlink_to(outside)
