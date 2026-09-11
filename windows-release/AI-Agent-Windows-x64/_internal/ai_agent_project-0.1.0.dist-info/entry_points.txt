@@ -1,0 +1,5 @@
+[console_scripts]
+ai-agent = ai_agent_project.cli:main
+ai-agent-desktop = ai_agent_project.desktop_app.main:main
+ai-agent-project = ai_agent_project:main
+
