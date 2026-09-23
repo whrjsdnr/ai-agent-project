@@ -1,0 +1,41 @@
+name: Windows desktop distribution
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.8'
+      - name: Ensure Inno Setup 6
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            $download = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+            Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $download
+            if ((Get-AuthenticodeSignature $download).Status -ne 'Valid') { throw 'Inno Setup signature verification failed' }
+            $install = Start-Process $download -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw 'Inno Setup installation failed' }
+          }
+      - name: Locked build, PE and frozen GUI acceptance, installer
+        shell: powershell
+        run: ./packaging/windows/build.ps1 -Installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Agent-Windows-x64
+          path: dist/AI-Agent/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Agent-Installer
+          path: dist/installer/AI-Agent-Setup.exe
+          if-no-files-found: error

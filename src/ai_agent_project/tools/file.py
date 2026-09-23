@@ -108,14 +108,21 @@ class FileTool:
     def _ensure_safe_resolved_path(self, path: Path) -> None:
         """Ensure a resolved path is still inside the configured workspace root."""
         try:
-            path.relative_to(self._workspace_root)
+            relative = path.relative_to(self._workspace_root)
+            self._reject_env_path(relative)
         except ValueError as error:
             raise WorkspacePathError("Path must remain inside the workspace") from error
 
     @staticmethod
     def _reject_env_path(path: Path) -> None:
         """Prevent access to .env files anywhere below the workspace root."""
-        if ".env" in path.parts:
+        if any(
+            part == ".env" or (part.startswith(".env.") and part != ".env.example")
+            for part in (
+                component.split(":", 1)[0].rstrip(" .").casefold()
+                for component in path.parts
+            )
+        ):
             raise WorkspacePathError("Access to .env files is not allowed")
 
     def definition(self) -> ToolDefinition:

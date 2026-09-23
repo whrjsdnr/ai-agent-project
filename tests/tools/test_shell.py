@@ -43,7 +43,10 @@ def test_version_commands_succeed(shell_tool: ShellTool, command: str) -> None:
     ("command", "expected"),
     [
         ("uv run pytest", ["uv", "run", "pytest"]),
-        ("uv run pytest tests/tools/test_shell.py", ["uv", "run", "pytest", "tests/tools/test_shell.py"]),
+        (
+            "uv run pytest tests/tools/test_shell.py",
+            ["uv", "run", "pytest", "tests/tools/test_shell.py"],
+        ),
         ("uv run ruff check src", ["uv", "run", "ruff", "check", "src"]),
     ],
 )
@@ -59,7 +62,9 @@ def test_shell_tool_allows_the_default_planner_validation_command(
 
     def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         captured["argv"] = args[0]
-        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=args[0], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr("ai_agent_project.tools.shell.subprocess.run", run)
 
@@ -86,7 +91,9 @@ def test_shell_tool_rejects_plain_pytest_options(shell_tool: ShellTool) -> None:
         ("git commit -m message", "Git command is not allowed: git commit"),
     ],
 )
-def test_dangerous_commands_are_blocked(shell_tool: ShellTool, command: str, error: str) -> None:
+def test_dangerous_commands_are_blocked(
+    shell_tool: ShellTool, command: str, error: str
+) -> None:
     result = shell_tool.execute({"command": command})
 
     assert result.success is False
@@ -125,7 +132,9 @@ def test_timeout_returns_a_clear_failure(
     assert result.error == "Command timed out after 1 seconds"
 
 
-def test_captures_stdout_and_stderr(monkeypatch: pytest.MonkeyPatch, shell_tool: ShellTool) -> None:
+def test_captures_stdout_and_stderr(
+    monkeypatch: pytest.MonkeyPatch, shell_tool: ShellTool
+) -> None:
     def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         del args, kwargs
         return subprocess.CompletedProcess(

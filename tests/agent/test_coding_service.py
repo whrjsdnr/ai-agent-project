@@ -16,6 +16,7 @@ from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.specification_parser import SpecificationParseError
 from ai_agent_project.agent.state import AgentState, AgentStatus
+from ai_agent_project.agent.workspace import WorkspaceSnapshot
 
 
 def make_specification() -> Specification:
@@ -83,12 +84,19 @@ class FakeParser:
 class FakePlanner:
     """Record planner calls and return a configured outcome."""
 
-    def __init__(self, outcome: ImplementationPlan | Exception, calls: list[str]) -> None:
+    def __init__(
+        self, outcome: ImplementationPlan | Exception, calls: list[str]
+    ) -> None:
         self._outcome = outcome
         self._calls = calls
         self.received_specification: Specification | None = None
 
-    def plan(self, specification: Specification) -> ImplementationPlan:
+    def plan(
+        self,
+        specification: Specification,
+        workspace: WorkspaceSnapshot | None = None,
+    ) -> ImplementationPlan:
+        del workspace
         self._calls.append("plan")
         self.received_specification = specification
         if isinstance(self._outcome, Exception):
@@ -155,7 +163,9 @@ class SequenceValidator:
         return self.reports.pop(0)
 
 
-def acceptance(status: AcceptanceStatus, requirement_id: str = "REQ-001") -> AcceptanceReport:
+def acceptance(
+    status: AcceptanceStatus, requirement_id: str = "REQ-001"
+) -> AcceptanceReport:
     return AcceptanceReport(
         requirements=[
             RequirementValidationResult(
@@ -318,7 +328,9 @@ def test_repair_loop_runs_only_for_failed_requirements(
     history: int,
     final_status: AcceptanceStatus,
 ) -> None:
-    agent = SequenceAgent([AgentState(status=AgentStatus.COMPLETED) for _ in range(runs)])
+    agent = SequenceAgent(
+        [AgentState(status=AgentStatus.COMPLETED) for _ in range(runs)]
+    )
     validator = SequenceValidator(reports)
     service = CodingAgentService(
         FakeParser(make_specification(), []),
@@ -338,7 +350,9 @@ def test_repair_loop_runs_only_for_failed_requirements(
 def test_repair_prompt_uses_only_failed_requirement_evidence() -> None:
     report = AcceptanceReport(
         requirements=[
-            RequirementValidationResult(requirement_id="REQ-001", status=AcceptanceStatus.PASSED),
+            RequirementValidationResult(
+                requirement_id="REQ-001", status=AcceptanceStatus.PASSED
+            ),
             RequirementValidationResult(
                 requirement_id="REQ-002",
                 status=AcceptanceStatus.FAILED,
@@ -351,14 +365,27 @@ def test_repair_prompt_uses_only_failed_requirement_evidence() -> None:
                 ],
                 evidence=["Validation command failed: uv run pytest"],
             ),
-            RequirementValidationResult(requirement_id="REQ-003", status=AcceptanceStatus.UNKNOWN),
+            RequirementValidationResult(
+                requirement_id="REQ-003", status=AcceptanceStatus.UNKNOWN
+            ),
         ]
     )
     specification = Specification.model_validate(
         {"requirements": [{"id": "REQ-002", "description": "Fix it."}]}
     )
     plan = ImplementationPlan.model_validate(
-        {"tasks": [{"id": "TASK-2", "title": "fix", "description": "fix", "requirement_ids": ["REQ-002"], "files_to_modify": ["src/a.py"]}], "validation_commands": ["uv run pytest"]}
+        {
+            "tasks": [
+                {
+                    "id": "TASK-2",
+                    "title": "fix",
+                    "description": "fix",
+                    "requirement_ids": ["REQ-002"],
+                    "files_to_modify": ["src/a.py"],
+                }
+            ],
+            "validation_commands": ["uv run pytest"],
+        }
     )
 
     prompt = build_repair_instruction(specification, plan, report, 1)
@@ -372,4 +399,9 @@ def test_repair_prompt_uses_only_failed_requirement_evidence() -> None:
 
 def test_negative_repair_limit_is_rejected() -> None:
     with pytest.raises(ValueError, match="max_repair_attempts"):
-        CodingAgentService(FakeParser(make_specification(), []), FakePlanner(make_plan(), []), FakeAgentService(AgentState(), []), max_repair_attempts=-1)  # type: ignore[arg-type]
+        CodingAgentService(
+            FakeParser(make_specification(), []),
+            FakePlanner(make_plan(), []),
+            FakeAgentService(AgentState(), []),
+            max_repair_attempts=-1,
+        )  # type: ignore[arg-type]

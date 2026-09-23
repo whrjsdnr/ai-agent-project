@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from ai_agent_project.command_policy import CommandPolicyError, parse_safe_command
 from ai_agent_project.tools.base import ToolDefinition, ToolResult
+from ai_agent_project.tools.file import FileTool
 
 MAX_OUTPUT_CHARS = 20_000
 
@@ -47,6 +48,18 @@ class ShellTool:
         try:
             values = self.input_schema.model_validate(arguments)
             argv = parse_safe_command(values.command)
+            if argv[:3] == ["uv", "run", "pytest"] and len(argv) == 4:
+                target = argv[3]
+            elif argv[:4] == ["uv", "run", "ruff", "check"]:
+                target = argv[4]
+            else:
+                target = None
+            if target is not None:
+                FileTool._reject_env_path(Path(target))
+                resolved = (self._workspace_root / target).resolve()
+                if not resolved.is_relative_to(self._workspace_root):
+                    raise ValueError("Command path must remain inside the workspace")
+                FileTool._reject_env_path(resolved.relative_to(self._workspace_root))
         except ValueError as error:
             return ToolResult(success=False, error=str(error))
 
