@@ -1,17 +1,25 @@
 """Workspace-scoped file operations for an agent."""
 
+import os
+import stat
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
+from ai_agent_project.agent.execution_observation import observe_tool
 from ai_agent_project.tools.base import ToolDefinition, ToolResult
+from ai_agent_project.workspace_io import (
+    open_directory_nofollow,
+    read_text_nofollow,
+    write_text_nofollow,
+)
 
 
 class FileInput(BaseModel):
     """Validated input for a workspace file operation."""
 
-    operation: Literal["list_files", "read_file", "write_file"]
+    operation: Literal["list_files", "read_file", "write_file", "delete_file"]
     path: str = "."
     content: str | None = None
 
@@ -31,7 +39,7 @@ class FileTool:
     """Read and write UTF-8 text files within one explicitly supplied workspace."""
 
     name = "file"
-    description = "List, read, or write UTF-8 text files within the workspace."
+    description = "List, read, write, or delete files within the workspace."
     input_schema = FileInput
 
     def __init__(self, workspace_root: Path) -> None:
@@ -39,6 +47,7 @@ class FileTool:
         if not self._workspace_root.is_dir():
             raise ValueError("workspace_root must be an existing directory")
 
+    @observe_tool("file")
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         """Validate and perform one workspace-scoped file operation."""
         try:
@@ -47,6 +56,8 @@ class FileTool:
                 return self._list_files(values.path)
             if values.operation == "read_file":
                 return self._read_file(values.path)
+            if values.operation == "delete_file":
+                return self._delete_file(values.path)
             return self._write_file(values.path, values.content)
         except (OSError, UnicodeError, ValueError) as error:
             return ToolResult(success=False, error=str(error))
@@ -78,7 +89,12 @@ class FileTool:
 
         return ToolResult(
             success=True,
-            data={"path": path, "content": file_path.read_text(encoding="utf-8")},
+            data={
+                "path": path,
+                "content": read_text_nofollow(self._workspace_root, Path(path))
+                if os.name == "posix"
+                else file_path.read_text(encoding="utf-8"),
+            },
         )
 
     def _write_file(self, path: str, content: str | None) -> ToolResult:
@@ -87,9 +103,32 @@ class FileTool:
         if file_path.exists() and file_path.is_dir():
             raise IsADirectoryError(f"Not a file: {path}")
 
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_safe_resolved_path(file_path.parent.resolve())
-        file_path.write_text(content or "", encoding="utf-8")
+        if os.name == "posix":
+            write_text_nofollow(self._workspace_root, Path(path), content or "")
+        else:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            self._ensure_safe_resolved_path(file_path.parent.resolve())
+            file_path.write_text(content or "", encoding="utf-8")
+        return ToolResult(success=True, data={"path": path})
+
+    def _delete_file(self, path: str) -> ToolResult:
+        file_path = self._resolve_workspace_path(path)
+        original = self._workspace_root / path
+        if original.is_symlink() or original.is_junction():
+            raise WorkspacePathError("Symlinks cannot be deleted by the file tool")
+        if not file_path.is_file():
+            raise WorkspacePathError("Only regular workspace files can be deleted")
+        descriptor = open_directory_nofollow(original.parent)
+        try:
+            metadata = os.stat(original.name, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise WorkspacePathError("Only regular workspace files can be deleted")
+            # Revalidate the named parent against the pinned directory handle.
+            if not os.path.samestat(os.fstat(descriptor), file_path.parent.stat()):
+                raise WorkspacePathError("Workspace directory changed")
+            os.unlink(original.name, dir_fd=descriptor)
+        finally:
+            os.close(descriptor)
         return ToolResult(success=True, data={"path": path})
 
     def _resolve_workspace_path(self, path: str) -> Path:
@@ -108,14 +147,21 @@ class FileTool:
     def _ensure_safe_resolved_path(self, path: Path) -> None:
         """Ensure a resolved path is still inside the configured workspace root."""
         try:
-            path.relative_to(self._workspace_root)
+            relative = path.relative_to(self._workspace_root)
+            self._reject_env_path(relative)
         except ValueError as error:
             raise WorkspacePathError("Path must remain inside the workspace") from error
 
     @staticmethod
     def _reject_env_path(path: Path) -> None:
         """Prevent access to .env files anywhere below the workspace root."""
-        if ".env" in path.parts:
+        if any(
+            part == ".env" or (part.startswith(".env.") and part != ".env.example")
+            for part in (
+                component.split(":", 1)[0].rstrip(" .").casefold()
+                for component in path.parts
+            )
+        ):
             raise WorkspacePathError("Access to .env files is not allowed")
 
     def definition(self) -> ToolDefinition:

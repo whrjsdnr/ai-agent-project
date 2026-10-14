@@ -117,6 +117,8 @@ def _is_relative_path_variant(argv: list[str], prefix: list[str]) -> bool:
     if argv[: len(prefix)] != prefix or len(argv) != len(prefix) + 1:
         return False
 
+    if argv[-1].startswith("-"):
+        raise CommandPolicyError("Command path cannot be an option")
     path = Path(argv[-1])
     if path.is_absolute() or ".." in path.parts:
         raise CommandPolicyError("Command paths must be relative to the workspace")

@@ -3,9 +3,16 @@
 import re
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 
 class Priority(StrEnum):
@@ -17,6 +24,7 @@ class Priority(StrEnum):
 
 
 _REQUIREMENT_ID_PREFIX = re.compile(r"^req-(\d+)(?=$|[\s:-])", re.IGNORECASE)
+RequirementId = Annotated[str, StringConstraints(min_length=1)]
 
 
 def canonicalize_requirement_id(value: str) -> str | None:
@@ -32,7 +40,7 @@ class Requirement(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    id: str = Field(min_length=1)
+    id: RequirementId
     title: str | None = None
     description: str = Field(min_length=1)
     acceptance_criteria: list[str] = Field(default_factory=list)
@@ -49,6 +57,13 @@ class Requirement(BaseModel):
         if canonical_id is None:
             return value
         return {**value, "id": canonical_id}
+
+    @field_validator("id")
+    @classmethod
+    def reject_blank_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Requirement ID must not be blank")
+        return value
 
 
 class Specification(BaseModel):
@@ -78,7 +93,8 @@ class Specification(BaseModel):
             canonicalize_requirement_id(raw_id) or raw_id
             for item in raw_requirements
             if isinstance(item, Requirement)
-            or isinstance(item, Mapping) and isinstance(item.get("id"), str)
+            or isinstance(item, Mapping)
+            and isinstance(item.get("id"), str)
             for raw_id in [item.id if isinstance(item, Requirement) else item["id"]]
         }
         next_number = 1

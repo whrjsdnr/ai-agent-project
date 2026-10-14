@@ -1,7 +1,7 @@
 [project]
 name = "ai-agent-project"
 version = "0.1.0"
-description = "Add your description here"
+description = "Lifecycle-driven AI coding agent with planning, execution, validation, checkpoints, and persistent CLI project runs"
 readme = "README.md"
 authors = [
     { name = "whrjsdnr", email = "geonugjo@gmail.com" }
@@ -12,16 +12,22 @@ dependencies = [
     "httpx>=0.28.1",
     "openai>=3.6.0",
     "pydantic>=2.13.5",
+    "pyside6>=6.11.2",
 ]
 
 [project.scripts]
+ai-agent-desktop = "ai_agent_project.desktop_app.main:main"
 ai-agent-project = "ai_agent_project:main"
+ai-agent = "ai_agent_project.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.6,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
+build = [
+    "pyinstaller>=6.22.2",
+]
 dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.5",

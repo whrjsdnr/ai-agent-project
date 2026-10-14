@@ -2,6 +2,7 @@
 
 from typing import Protocol
 
+from ai_agent_project.agent.developer_bootstrap_context import DeveloperBootstrapContext
 from ai_agent_project.agent.specification import Specification
 
 SPECIFICATION_PARSER_INSTRUCTIONS = """Parse the supplied specification document.
@@ -23,7 +24,9 @@ class SpecificationParseError(ValueError):
 class SpecificationParser(Protocol):
     """Parse raw Markdown or text into a provider-neutral Specification."""
 
-    def parse(self, text: str) -> Specification:
+    def parse(
+        self, text: str, *, context: DeveloperBootstrapContext | None = None
+    ) -> Specification:
         """Return a structured specification for non-empty source text."""
         ...
 

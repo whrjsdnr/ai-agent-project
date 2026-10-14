@@ -16,6 +16,7 @@ from ai_agent_project.agent.plan import ImplementationPlan
 from ai_agent_project.agent.service import AgentService
 from ai_agent_project.agent.specification import Specification
 from ai_agent_project.agent.state import AgentState, AgentStatus
+from ai_agent_project.agent.workspace import WorkspaceSnapshot
 from ai_agent_project.llm.base import LLMResponse
 from ai_agent_project.llm.providers.openai_planner import OpenAIImplementationPlanner
 from ai_agent_project.llm.providers.openai_specification import (
@@ -46,7 +47,9 @@ def test_health_endpoint() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_default_agent_registers_calculator_file_and_shell_tools(tmp_path: Path) -> None:
+def test_default_agent_registers_calculator_file_and_shell_tools(
+    tmp_path: Path,
+) -> None:
     from ai_agent_project.api.app import create_default_agent_service
 
     service = create_default_agent_service(workspace_root=tmp_path)
@@ -160,7 +163,12 @@ def test_coding_run_endpoint_uses_injected_orchestration_dependencies() -> None:
             return specification
 
     class FakePlanner:
-        def plan(self, parsed: Specification) -> ImplementationPlan:
+        def plan(
+            self,
+            parsed: Specification,
+            workspace: WorkspaceSnapshot | None = None,
+        ) -> ImplementationPlan:
+            del workspace
             assert parsed is specification
             return plan
 
@@ -254,7 +262,12 @@ def test_coding_run_endpoint_records_a_repair_attempt_from_validator_evidence() 
         def __init__(self) -> None:
             self.calls = 0
 
-        def plan(self, parsed: Specification) -> ImplementationPlan:
+        def plan(
+            self,
+            parsed: Specification,
+            workspace: WorkspaceSnapshot | None = None,
+        ) -> ImplementationPlan:
+            del workspace
             assert parsed is specification
             self.calls += 1
             return plan

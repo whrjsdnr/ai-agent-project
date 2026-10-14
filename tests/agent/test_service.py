@@ -18,7 +18,9 @@ class FakeLLMClient:
         self._responses = list(responses)
         self.requests: list[list[AgentMessage]] = []
 
-    def complete(self, messages: list[AgentMessage], tools: list[object]) -> LLMResponse:
+    def complete(
+        self, messages: list[AgentMessage], tools: list[object]
+    ) -> LLMResponse:
         del tools
         self.requests.append(list(messages))
         return self._responses.pop(0)
@@ -54,7 +56,9 @@ def make_fake_registry(*tools: FakeTool) -> ToolRegistry:
 
 
 def test_agent_completes_with_a_final_answer() -> None:
-    service = AgentService(FakeLLMClient([LLMResponse(final_answer="Hello")]), make_registry())
+    service = AgentService(
+        FakeLLMClient([LLMResponse(final_answer="Hello")]), make_registry()
+    )
 
     state = service.run("Say hello")
 
@@ -111,7 +115,9 @@ def test_agent_returns_unknown_tool_error_to_the_llm() -> None:
     state = service.run("Use a missing tool")
 
     assert state.status is AgentStatus.COMPLETED
-    assert state.tool_results == [ToolResult(success=False, error="Tool not found: missing")]
+    assert state.tool_results == [
+        ToolResult(success=False, error="Tool not found: missing")
+    ]
     assert json.loads(llm.requests[1][-1].content) == {
         "success": False,
         "data": {},
@@ -126,7 +132,9 @@ def test_agent_fails_when_tool_call_limit_is_exceeded() -> None:
             arguments={"operation": "add", "a": 1, "b": 1},
         )
     )
-    service = AgentService(FakeLLMClient([tool_call, tool_call]), make_registry(), max_tool_calls=1)
+    service = AgentService(
+        FakeLLMClient([tool_call, tool_call]), make_registry(), max_tool_calls=1
+    )
 
     state = service.run("Keep calculating")
 

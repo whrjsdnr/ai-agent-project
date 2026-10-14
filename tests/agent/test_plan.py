@@ -123,3 +123,82 @@ def test_plan_rejects_unsafe_validation_commands(command: str) -> None:
                 "validation_commands": [command],
             }
         )
+
+
+def test_task_validation_commands_use_the_same_safe_command_policy() -> None:
+    plan = ImplementationPlan.model_validate(
+        {
+            "tasks": [
+                {
+                    "id": "TASK-001",
+                    "title": "Validate",
+                    "description": "Validate one requirement.",
+                    "requirement_ids": ["REQ-001"],
+                    "validation_commands": [
+                        "uv run pytest tests/test_todos.py::test_store_list_filtering"
+                    ],
+                }
+            ]
+        }
+    )
+    assert plan.tasks[0].validation_commands == [
+        "uv run pytest tests/test_todos.py::test_store_list_filtering"
+    ]
+
+    with pytest.raises(ValidationError, match="Unsafe validation command"):
+        ImplementationPlan.model_validate(
+            {
+                "tasks": [
+                    {
+                        "id": "TASK-001",
+                        "title": "Validate",
+                        "description": "Validate one requirement.",
+                        "requirement_ids": ["REQ-001"],
+                        "validation_commands": ["pytest tests/test_todos.py"],
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize("requirement_id", ["", "   "])
+def test_plan_rejects_blank_task_requirement_ids(requirement_id: str) -> None:
+    with pytest.raises(
+        ValidationError, match="at least 1 character|must not contain blank IDs"
+    ):
+        ImplementationPlan.model_validate(
+            {
+                "tasks": [
+                    {
+                        "id": "TASK-001",
+                        "title": "Invalid traceability",
+                        "description": "Reject blank IDs.",
+                        "requirement_ids": [requirement_id],
+                    }
+                ]
+            }
+        )
+
+
+def test_traceability_diagnostic_identifies_unknown_id() -> None:
+    plan = ImplementationPlan.model_validate(
+        {
+            "tasks": [
+                {
+                    "id": "TASK-001",
+                    "title": "Unknown",
+                    "description": "Keep diagnostics explicit.",
+                    "requirement_ids": ["UPG-REQ-999"],
+                }
+            ]
+        }
+    )
+    specification = Specification.model_validate(
+        {
+            "requirements": [
+                {"id": "UPG-REQ-001", "description": "Known upgrade requirement."}
+            ]
+        }
+    )
+    with pytest.raises(ImplementationPlanValidationError, match="'UPG-REQ-999'"):
+        plan.validate_traceability(specification)

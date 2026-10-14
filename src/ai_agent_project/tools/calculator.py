@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from ai_agent_project import calculator
+from ai_agent_project.agent.execution_observation import observe_tool
 from ai_agent_project.tools.base import ToolDefinition, ToolResult
 
 Number = int | float
@@ -25,6 +26,7 @@ class CalculatorTool:
     description = "Perform addition, subtraction, multiplication, or division."
     input_schema = CalculatorInput
 
+    @observe_tool("calculator")
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         """Run one validated calculator operation."""
         try:
