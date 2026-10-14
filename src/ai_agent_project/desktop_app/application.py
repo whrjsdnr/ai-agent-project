@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from ai_agent_project.agent.execution_event_store import FileExecutionEventStore
 from ai_agent_project.agent.hybrid_coordination_application import (
     HybridCoordinationService,
 )
@@ -47,7 +48,7 @@ from ai_agent_project.llm.providers.openai_project_mode_proposer import (
     OpenAIProjectModeProposer,
 )
 from ai_agent_project.llm.runtime import provider_client_scope
-from ai_agent_project.paths import desktop_workspace
+from ai_agent_project.paths import desktop_workspace, runtime_paths
 
 
 @dataclass
@@ -85,7 +86,13 @@ class LazyApplication:
     def __getattr__(self, name: str) -> Callable[..., Any]:
         def invoke(*args: Any, **kwargs: Any) -> Any:
             with provider_client_scope():
-                return getattr(self.factory(name, args), name)(*args, **kwargs)
+                workspace_root = kwargs.pop("workspace_root", None)
+                application = (
+                    self.factory(name, args, workspace_root)
+                    if workspace_root is not None
+                    else self.factory(name, args)
+                )
+                return getattr(application, name)(*args, **kwargs)
 
         return invoke
 
@@ -106,6 +113,9 @@ def build_desktop_application(
     provider = SessionProviderConfigService(
         root / "settings" / "llm.json" if root else None
     )
+    events = FileExecutionEventStore(
+        (root if root else runtime_paths().data) / "execution-events"
+    )
     sessions = ProjectSessionService(
         FileProjectStore(root / "projects" if root else default_project_store_root()),
         LazyApplication(
@@ -122,13 +132,26 @@ def build_desktop_application(
         provider_config=provider.resolve,
     )
     developer = LazyApplication(
-        lambda name, args: create_default_project_application_service(
-            developers.workspace_root_for(args[0])
-            if name == "execute_current_phase"
-            else workspace,
-            store=developers,
-            provider_config=provider.resolve(),
-            improvement_service=improvements,
+        lambda name, args, workspace_root=None: (
+            create_default_project_application_service(
+                workspace_root
+                or (
+                    developers.workspace_root_for(args[0])
+                    if name
+                    not in {
+                        "create_project",
+                        "create_upgrade_project",
+                        "create_project_with_context",
+                    }
+                    else workspace
+                ),
+                store=developers.for_workspace(workspace_root)
+                if workspace_root
+                else developers,
+                provider_config=provider.resolve(),
+                improvement_service=improvements,
+                events=events,
+            )
         )
     )
     research = LazyApplication(
@@ -162,4 +185,5 @@ def build_desktop_application(
         ),
         developer_application=developer,
         research_application=research,
+        events=events,
     )

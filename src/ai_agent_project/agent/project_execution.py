@@ -12,6 +12,8 @@ from ai_agent_project.agent.checkpoint import (
     PhaseProgressReport,
     ProgressReporter,
 )
+from ai_agent_project.agent.code_snapshot import record_snapshot
+from ai_agent_project.agent.execution_events import emit
 from ai_agent_project.agent.phase_execution import (
     PhaseExecutionResult,
     PhaseExecutionService,
@@ -136,12 +138,18 @@ class ProjectExecutionService:
         if not set(phase.depends_on) <= set(state.completed_phase_ids):
             raise ValueError("Current phase dependencies are not approved")
 
-        result = self._phase_execution_service.execute(
-            specification,
-            project_specification,
-            project_plan,
-            phase.id,
-        )
+        record_snapshot("before")
+        emit("phase_started", "running")
+        try:
+            result = self._phase_execution_service.execute(
+                specification,
+                project_specification,
+                project_plan,
+                phase.id,
+            )
+        except Exception:
+            emit("phase_failed", "failed", error="execution_failed")
+            raise
         progress_report = self._progress_reporter.build(phase, result)
         checkpoint = self._checkpoint_service.create(phase, result, progress_report)
         record = _record_for_phase(state, phase.id)

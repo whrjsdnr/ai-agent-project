@@ -1,10 +1,12 @@
 """Main window and explicit service command routing."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import QThreadPool, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QListWidget,
@@ -33,6 +35,7 @@ from ai_agent_project.desktop_app.dialogs import (
     ModeConfirmationDialog,
     ResearchResultsDialog,
     TextInputDialog,
+    choose_directory,
 )
 from ai_agent_project.desktop_app.pages import (
     ArtifactsPage,
@@ -40,6 +43,7 @@ from ai_agent_project.desktop_app.pages import (
     ProjectsPage,
     SettingsPage,
 )
+from ai_agent_project.desktop_app.strings import install_qt_translation, tr, value
 from ai_agent_project.desktop_app.theme import STYLESHEET
 from ai_agent_project.desktop_app.widgets import label
 from ai_agent_project.desktop_app.worker import OperationWorker
@@ -59,31 +63,36 @@ class MainWindow(QMainWindow):
 
     def __init__(self, service: DesktopService) -> None:
         super().__init__()
+        install_qt_translation(QApplication.instance())
         self.service = service
         self.state = PresentationState()
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._worker = None
+        from ai_agent_project.desktop_app.folder_opener import FolderOpener
+
+        self.folder_opener = FolderOpener(self)
         self._on_success = None
-        self.setWindowTitle("AI Agent — Local Workspace")
+        self._mutation_buttons: list[QPushButton] = []
+        self.setWindowTitle(tr("AI Agent — Local Workspace"))
         self.resize(1200, 760)
         self.setMinimumSize(900, 600)
         self.setStyleSheet(STYLESHEET)
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        self.topbar = label("AI Agent  /  Local Workspace")
+        self.topbar = label(tr("AI Agent  /  Local Workspace"))
         top = QHBoxLayout()
         top.addWidget(self.topbar, 1)
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton(tr("Refresh"))
         refresh.clicked.connect(self.refresh)
         top.addWidget(refresh)
         layout.addLayout(top)
         body = QHBoxLayout()
         layout.addLayout(body)
         self.sidebar = QListWidget()
-        self.sidebar.addItems(self.NAVIGATION)
-        self.sidebar.setFixedWidth(180)
+        self.sidebar.addItems([tr(name) for name in self.NAVIGATION])
+        self.sidebar.setMinimumWidth(210)
         body.addWidget(self.sidebar)
         self.stack = QStackedWidget()
         body.addWidget(self.stack, 1)
@@ -122,8 +131,6 @@ class MainWindow(QMainWindow):
         return self._worker is not None
 
     def navigate(self, name: str) -> None:
-        if self.busy:
-            return
         self.sidebar.blockSignals(True)
         self.sidebar.setCurrentRow(
             self.NAVIGATION.index(name)
@@ -140,23 +147,24 @@ class MainWindow(QMainWindow):
         self.navigate("Project Detail")
 
     def refresh(self) -> None:
-        if self.busy:
-            return
         try:
             self.pages[self.state.current_page].refresh()
+            self._set_mutation_controls()
             provider = self.service.get_provider_config()
             self.topbar.setText(
-                f"AI Agent  /  Local Workspace     |     {provider.model} · Credential {'configured' if provider.credential_configured else 'missing — open Settings'}"
+                tr(
+                    f"AI Agent / 작업 폴더     |     {provider.model} · API Key {('설정됨' if provider.credential_configured else '없음 — 설정에서 입력하세요')}"
+                )
             )
         except DesktopError as error:
-            self.show_error(error.message)
+            self.show_error(tr(error.message))
         except Exception:  # noqa: BLE001 -- UI boundary never exposes raw errors
             self.show_error(
-                "Unable to load this view. Check local configuration and refresh."
+                tr("Unable to load this view. Check local configuration and refresh.")
             )
 
     def show_error(self, message: str) -> None:
-        self.statusBar().showMessage(message)
+        self.statusBar().showMessage(tr(message))
         QMessageBox.warning(self, "AI Agent", message)
 
     def submit(
@@ -170,16 +178,40 @@ class MainWindow(QMainWindow):
         self._worker = OperationWorker(operation)
         self._worker.signals.succeeded.connect(self._succeeded)
         self._worker.signals.failed.connect(self._failed)
-        self.centralWidget().setEnabled(False)
+        self._set_mutation_controls()
         self.busy_indicator.show()
-        self.statusBar().showMessage("Working on your requested operation…")
+        self.statusBar().showMessage(tr("Working on your requested operation…"))
         self.pool.start(self._worker)
+
+    def _set_mutation_controls(self) -> None:
+        # All action buttons are disabled while reads/navigation remain available.
+        read_buttons = {
+            "openWorkspaceFolder",
+            "copyWorkspacePath",
+            "refreshWorkspace",
+            "timelineEarlier",
+            "timelineLive",
+            "olderSnapshots",
+        }
+        for button in self.centralWidget().findChildren(QPushButton):
+            if button.text() == tr("Refresh") or button.objectName() in read_buttons:
+                continue
+            if self.busy and button.isEnabled():
+                button.setEnabled(False)
+                self._mutation_buttons.append(button)
+        if not self.busy:
+            for button in self._mutation_buttons:
+                try:
+                    button.setEnabled(True)
+                except RuntimeError:
+                    pass  # The page may have been rebuilt during execution.
+            self._mutation_buttons.clear()
 
     def _finish(self):
         callback = self._on_success
         self._worker = None
         self._on_success = None
-        self.centralWidget().setEnabled(True)
+        self._set_mutation_controls()
         self.busy_indicator.hide()
         self.refresh()
         return callback
@@ -187,31 +219,80 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _succeeded(self, result) -> None:
         callback = self._finish()
-        self.statusBar().showMessage("Requested operation completed.")
+        self.statusBar().showMessage(tr("Requested operation completed."))
         if callback:
             callback(result)
 
     @Slot(str)
     def _failed(self, message) -> None:
         self._finish()
-        self.show_error(message)
+        self.show_error(tr(message))
 
     def connection_result(self, result: DesktopConnectionView) -> None:
         # The facade supplies normalized text; never display provider exceptions.
         self.statusBar().showMessage(
-            f"{'Success' if result.success else 'Failure'}: {result.message}"
+            tr(f"{('성공' if result.success else '실패')}: {tr(result.message)}")
         )
 
     def create_project(self) -> None:
+        if self.busy:
+            return
         dialog = CreateProjectDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             request, title = dialog.request.toPlainText(), dialog.title.text()
+            parent_directory = Path(dialog.parent_directory.text())
+            folder_name = dialog.folder_name.text()
             self.submit(
-                lambda: self.service.create_project(request, title=title or None),
+                lambda: self.service.create_project(
+                    request,
+                    title=title or None,
+                    parent_directory=parent_directory,
+                    folder_name=folder_name,
+                ),
                 self.select_project,
             )
 
+    def open_existing_project(self) -> None:
+        if self.busy:
+            return
+        directory = choose_directory(self, "기존 프로젝트 폴더 선택")
+        if not directory:
+            return
+        # Reopening a registered folder requires no new proposal or execution.
+        try:
+            project_id = self.service.find_project_directory(Path(directory))
+        except DesktopError as error:
+            self.show_error(tr(error.message))
+            return
+        if project_id:
+            self.select_project(project_id)
+            return
+        dialog = TextInputDialog(
+            "기존 프로젝트 등록",
+            "등록",
+            "기존 파일을 변경하지 않습니다. 향후 작업 요청을 입력하세요.",
+            self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            request = dialog.text.toPlainText()
+            self.submit(
+                lambda: self.service.open_existing_project(Path(directory), request),
+                self.select_project,
+            )
+
+    def change_project_directory(self) -> None:
+        if self.busy or not self.state.selected_project_id:
+            return
+        project_id = self.state.selected_project_id
+        directory = choose_directory(self, "작업 폴더 변경")
+        if directory:
+            self.submit(
+                lambda: self.service.set_project_workspace(project_id, Path(directory))
+            )
+
     def create_run(self, domain: str) -> None:
+        if self.busy:
+            return
         pid = self.state.selected_project_id
         command = (
             self.service.create_developer_run
@@ -243,16 +324,14 @@ class MainWindow(QMainWindow):
                 dialog = ModeConfirmationDialog(view, self)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     work, mode = (
-                        WorkMode(dialog.work.currentText()),
-                        ProjectMode(dialog.mode.currentText()),
+                        WorkMode(dialog.work.currentData()),
+                        ProjectMode(dialog.mode.currentData()),
                     )
                     self.submit(
                         lambda: self.service.confirm_project_mode(pid, work, mode)
                     )
             elif action in ("bind_developer_run", "bind_research_run"):
-                dialog = TextInputDialog(
-                    "Bind Run", action.replace("_", " ").title(), "Run ID", self
-                )
+                dialog = TextInputDialog("Bind Run", value(action), "Run ID", self)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     run_id = dialog.text.toPlainText().strip()
                     command = getattr(self.service, action)
@@ -303,15 +382,21 @@ class MainWindow(QMainWindow):
                 command = getattr(self.service, action)
                 self.submit(lambda: command(pid))
             else:
-                self.show_error("This action is unavailable in this desktop version.")
+                self.show_error(
+                    tr("This action is unavailable in this desktop version.")
+                )
         except DesktopError as error:
-            self.show_error(error.message)
+            self.show_error(tr(error.message))
         except Exception:  # noqa: BLE001 -- UI boundary never exposes raw errors
             self.show_error(
-                "Unable to prepare this action. Refresh and check its required input."
+                tr(
+                    "Unable to prepare this action. Refresh and check its required input."
+                )
             )
 
     def bootstrap(self, handoff_id: str) -> None:
+        if self.busy:
+            return
         dialog = TextInputDialog(
             "Developer From Research",
             "Create Developer Run From Research",
@@ -329,7 +414,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.busy:
             self.statusBar().showMessage(
-                "Wait for the requested operation to finish before closing."
+                tr("Wait for the requested operation to finish before closing.")
             )
             event.ignore()
             return

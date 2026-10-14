@@ -11,6 +11,9 @@ from functools import wraps
 from openai import OpenAIError
 from pydantic import ValidationError
 
+from ai_agent_project.agent.code_snapshot import SnapshotError
+from ai_agent_project.agent.execution_event_store import ExecutionEventError
+from ai_agent_project.agent.execution_recovery import ExecutionRecoveryRequiredError
 from ai_agent_project.agent.hybrid_coordination_application import (
     HybridCoordinationError,
 )
@@ -110,6 +113,21 @@ def desktop_boundary[**P, R](operation: Callable[P, R]) -> Callable[P, R]:
             ) from None
         except ImprovementError as error:
             raise DesktopError(DesktopErrorCode.INVALID_STATE, str(error)) from None
+        except ExecutionRecoveryRequiredError:
+            raise DesktopError(
+                DesktopErrorCode.ACTION_NOT_ALLOWED,
+                "Previous execution is interrupted or its outcome is unknown. Recovery is read-only; retry requires a separately authorized workflow.",
+            ) from None
+        except SnapshotError:
+            raise DesktopError(
+                DesktopErrorCode.ACTION_NOT_ALLOWED,
+                "Snapshot cannot be safely inspected or stored. No automatic recovery action was performed.",
+            ) from None
+        except ExecutionEventError:
+            raise DesktopError(
+                DesktopErrorCode.ACTION_NOT_ALLOWED,
+                "Execution is busy or its public event storage is unavailable. Refresh and try again.",
+            ) from None
         except ProviderConfigError:
             raise DesktopError(
                 DesktopErrorCode.CONFIGURATION_ERROR,

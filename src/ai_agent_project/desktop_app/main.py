@@ -7,11 +7,13 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from ai_agent_project.desktop_app.application import build_desktop_application
 from ai_agent_project.desktop_app.resources import application_version, resource_path
+from ai_agent_project.desktop_app.strings import install_qt_translation, tr
 from ai_agent_project.desktop_app.window import MainWindow
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    install_qt_translation(app)
     app.setApplicationName("AI Agent")
     try:
         app.setApplicationVersion(application_version())
@@ -39,7 +41,7 @@ def main() -> int:
         QMessageBox.critical(
             None,
             "AI Agent",
-            "Cannot start AI Agent. Check installation and user-directory access.",
+            tr("Cannot start AI Agent. Check installation and user-directory access."),
         )
         return 1
 

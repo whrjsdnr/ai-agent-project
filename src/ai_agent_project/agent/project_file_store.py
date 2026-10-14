@@ -92,6 +92,10 @@ class FileProjectRunStore:
                 f"Could not delete project run snapshot: {project_run_id}"
             ) from error
 
+    def for_workspace(self, workspace_root: Path) -> "FileProjectRunStore":
+        """Share run history while fixing the creation root of a new service."""
+        return FileProjectRunStore(self._root, workspace_root=workspace_root)
+
     def workspace_root_for(self, project_run_id: str) -> Path:
         """Return the saved absolute workspace root for one persisted run."""
         path = self._path_for(project_run_id)

@@ -10,6 +10,8 @@ from ai_agent_project.agent.checkpoint import (
 from ai_agent_project.agent.coding_service import (
     CodingAgentService,
 )
+from ai_agent_project.agent.execution_event_store import FileExecutionEventStore
+from ai_agent_project.agent.execution_runtime import runtime_secrets
 from ai_agent_project.agent.phase_execution import PhaseExecutionService
 from ai_agent_project.agent.project_application import (
     InMemoryProjectRunStore,
@@ -136,6 +138,7 @@ def create_default_project_application_service(
     agent_service: AgentService | None = None,
     store: ProjectRunStore | None = None,
     improvement_service=None,
+    events: FileExecutionEventStore | None = None,
 ) -> ProjectApplicationService:
     """Compose production planning and lifecycle services with an injected store."""
     provider_config = ProviderConfigService().resolve(provider_config)
@@ -173,6 +176,12 @@ def create_default_project_application_service(
         store if store is not None else InMemoryProjectRunStore(),
         OpenAIProjectPlanReviser(config=provider_config),
         upgrade_runner,
+        events=events,
+        event_secrets=lambda: runtime_secrets(
+            provider_config.api_key.get_secret_value()
+            if provider_config.api_key
+            else None
+        ),
     )
 
     return ImprovementAwareApplication(

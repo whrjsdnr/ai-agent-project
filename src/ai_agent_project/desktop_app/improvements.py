@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from ai_agent_project.desktop_app.dialogs import InputDialog
 from ai_agent_project.desktop_app.pages import Page, fill_table, table
+from ai_agent_project.desktop_app.strings import tr, value
 from ai_agent_project.desktop_app.widgets import label
 
 
@@ -20,25 +21,27 @@ class FeedbackDialog(InputDialog):
     def __init__(self, parent=None):
         super().__init__("Run Feedback", "Save Feedback", parent)
         self.rating = QComboBox()
-        self.rating.addItem("Helpful", "helpful")
-        self.rating.addItem("Needs Improvement", "not_helpful")
+        self.rating.addItem(tr("Helpful"), "helpful")
+        self.rating.addItem(tr("Needs Improvement"), "not_helpful")
         self.text = QPlainTextEdit()
         self.text.setPlaceholderText(
-            "Optional feedback (500 characters). Do not include credentials."
+            tr("Optional feedback (500 characters). Do not include credentials.")
         )
-        self.form.addRow("Rating", self.rating)
-        self.form.addRow("Comment", self.text)
+        self.form.addRow(tr("Rating"), self.rating)
+        self.form.addRow(tr("Comment"), self.text)
 
 
 class ImprovementsPage(Page):
     def __init__(self, window):
         super().__init__("Agent Improvement")
         self.window = window
-        self.summary = label("")
+        self.summary = label(tr(""))
         self.layout.addWidget(self.summary)
         self.layout.addWidget(
             label(
-                "User-approved experience-based guidance. Evaluation and approval are separate actions. Usage and outcomes are descriptive, not causal proof."
+                tr(
+                    "User-approved experience-based guidance. Evaluation and approval are separate actions. Usage and outcomes are descriptive, not causal proof."
+                )
             )
         )
         self.tabs = QTabWidget()
@@ -58,15 +61,14 @@ class ImprovementsPage(Page):
             widget = table(headers)
             self.tables[name] = widget
             layout.addWidget(widget)
-            self.tabs.addTab(body, name)
+            self.tabs.addTab(body, tr(name))
             widget.currentCellChanged.connect(self.preview_selected)
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.layout.addWidget(self.preview)
         self.scope = QComboBox()
-        self.scope.addItems(
-            ["Source domain", "global", "developer", "researcher", "project"]
-        )
+        for scope in ("Source domain", "global", "developer", "researcher", "project"):
+            self.scope.addItem(value(scope), scope)
         self.layout.addWidget(self.scope)
         row = QHBoxLayout()
         self.buttons = {}
@@ -76,7 +78,7 @@ class ImprovementsPage(Page):
             ("Enable Rule", self.enable),
             ("Disable Rule", self.disable),
         ]:
-            button = QPushButton(title)
+            button = QPushButton(tr(title))
             button.clicked.connect(command)
             row.addWidget(button)
             self.buttons[title] = button
@@ -90,15 +92,17 @@ class ImprovementsPage(Page):
         self.candidates, self.rules = state.candidates, service.list_improvement_rules()
         self.evaluations, self.feedback = state.evaluations, state.feedback
         self.summary.setText(
-            f"Pending Candidates: {sum(c.status == 'pending' for c in self.candidates)}   Active Rules: {sum(r.enabled for r in self.rules)}   Evaluations: {len(self.evaluations)}"
+            tr(
+                f"검토 대기 후보: {sum(c.status == 'pending' for c in self.candidates)}   사용 중인 규칙: {sum(r.enabled for r in self.rules)}   평가 기록: {len(self.evaluations)}"
+            )
         )
         rows = {
             "Candidates": [
                 (
                     c.title,
-                    f"{c.source_domain} / {c.project_id or '—'}",
-                    c.category,
-                    c.status,
+                    f"{value(c.source_domain)} / {c.project_id or '—'}",
+                    value(c.category),
+                    value(c.status),
                     c.confidence,
                 )
                 for c in self.candidates
@@ -106,16 +110,16 @@ class ImprovementsPage(Page):
             "Approved Rules": [
                 (
                     r.rule_text,
-                    r.scope,
-                    r.category,
-                    "Yes" if r.enabled else "No",
+                    value(r.scope),
+                    value(r.category),
+                    tr("Yes") if r.enabled else tr("No"),
                     r.version,
                 )
                 for r in self.rules
             ],
             "Evaluations": [
                 (
-                    e.evidence.source_domain,
+                    value(e.evidence.source_domain),
                     e.evidence.source_run_id,
                     e.created_at.isoformat(),
                     e.evidence.digest[:12],
@@ -123,7 +127,12 @@ class ImprovementsPage(Page):
                 for e in self.evaluations
             ],
             "Feedback / Impact": [
-                (f.target_type, f.rating, f.created_at.isoformat(), f.text)
+                (
+                    value(f.target_type),
+                    value(f.rating),
+                    f.created_at.isoformat(),
+                    f.text,
+                )
                 for f in self.feedback
             ],
         }
@@ -136,7 +145,7 @@ class ImprovementsPage(Page):
         self.preview_selected()
 
     def selected(self):
-        name = self.tabs.tabText(self.tabs.currentIndex())
+        name = tuple(self.tables)[self.tabs.currentIndex()]
         row = self.tables[name].currentRow()
         values = {
             "Candidates": self.candidates,
@@ -153,7 +162,7 @@ class ImprovementsPage(Page):
         self.scope.setEnabled(name == "Candidates")
         if value is None:
             self.preview.setPlainText(
-                "Select a record to inspect its provenance and available actions."
+                tr("Select a record to inspect its provenance and available actions.")
             )
             return
         self.preview.setPlainText(value.model_dump_json(indent=2))
@@ -167,22 +176,24 @@ class ImprovementsPage(Page):
                 conflicts = self.window.service.get_improvement_conflicts(value.rule_id)
                 if conflicts:
                     self.preview.appendPlainText(
-                        "\nPossible conflicting rules: "
+                        tr("\nPossible conflicting rules: ")
                         + ", ".join(conflicts)
-                        + "\nWhen both apply, neither is injected. Review and explicitly disable one."
+                        + tr(
+                            "\nWhen both apply, neither is injected. Review and explicitly disable one."
+                        )
                     )
                 impact = self.window.service.get_improvement_impact(value.rule_id)
                 self.preview.appendPlainText(
-                    "\nObserved usage / post-application outcomes:\n"
+                    tr("\nObserved usage / post-application outcomes:\n")
                     + impact.model_dump_json(indent=2)
                 )
             except Exception:  # noqa: BLE001 -- safe UI boundary
-                self.window.show_error("Cannot load improvement outcomes.")
+                self.window.show_error(tr("Cannot load improvement outcomes."))
 
     def approve(self):
         name, value = self.selected()
         if name == "Candidates" and value is not None:
-            scope = self.scope.currentText()
+            scope = self.scope.currentData()
             self.window.submit(
                 lambda: self.window.service.approve_improvement_candidate(
                     value.candidate_id, None if scope == "Source domain" else scope

@@ -4,9 +4,41 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from ai_agent_project.agent.execution_events import PublicExecutionEvent
+
 
 class DesktopModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class DesktopWorkspaceFile(DesktopModel):
+    path: str
+    exists: bool
+    planned: bool
+
+
+class DesktopWorkspaceView(DesktopModel):
+    run_id: str
+    absolute_path: str
+    exists: bool
+    plan_status: str
+    files: tuple[DesktopWorkspaceFile, ...]
+    truncated: bool
+
+
+class DesktopWorkspaceCode(DesktopModel):
+    path: str
+    exists: bool
+    content: str
+    message: str
+
+
+class DesktopExecutionView(DesktopModel):
+    run_id: str
+    current_phase: str | None
+    workflow_status: str
+    last_phase_event: PublicExecutionEvent | None
+    last_event: PublicExecutionEvent | None
 
 
 class DesktopPendingActionView(DesktopModel):
@@ -28,6 +60,7 @@ class DesktopProjectSummary(DesktopModel):
     developer_run_id: str | None
     researcher_run_id: str | None
     pending_actions: tuple[DesktopPendingActionView, ...]
+    workspace_root: str | None = None
 
 
 class DesktopDirectionView(DesktopModel):

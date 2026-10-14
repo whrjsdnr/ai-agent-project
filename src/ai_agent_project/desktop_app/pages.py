@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ai_agent_project.desktop.models import DesktopProjectView
+from ai_agent_project.desktop_app.strings import artifact_title, tr, value
 from ai_agent_project.desktop_app.widgets import PendingActionWidget, label
 
 
@@ -32,18 +33,19 @@ class Page(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.layout.setContentsMargins(24, 20, 24, 20)
-        heading = label(title)
+        heading = label(tr(title))
         heading.setProperty("heading", True)
         self.layout.addWidget(heading)
 
 
 def table(headers):
     widget = QTableWidget(0, len(headers))
-    widget.setHorizontalHeaderLabels(headers)
+    widget.setHorizontalHeaderLabels([tr(h) for h in headers])
     widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
     widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    widget.setWordWrap(True)
     widget.verticalHeader().hide()
     return widget
 
@@ -51,8 +53,11 @@ def table(headers):
 def fill_table(widget, rows):
     widget.setRowCount(len(rows))
     for row, values in enumerate(rows):
-        for col, value in enumerate(values):
-            widget.setItem(row, col, QTableWidgetItem(str(value or "—")))
+        for col, cell in enumerate(values):
+            item = QTableWidgetItem(str(cell or "—"))
+            item.setToolTip(str(cell or "—"))
+            widget.setItem(row, col, item)
+    widget.resizeRowsToContents()
 
 
 class ProjectsPage(Page):
@@ -64,17 +69,17 @@ class ProjectsPage(Page):
         if dashboard:
             metric_row = QHBoxLayout()
             for title in ("Total projects", "Active", "Completed", "Awaiting user"):
-                card = QGroupBox(title)
+                card = QGroupBox(tr(title))
                 card_layout = QVBoxLayout(card)
-                value = label("0")
+                value = label(tr("0"))
                 value.setProperty("heading", True)
                 self.metrics.append(value)
                 card_layout.addWidget(value)
                 metric_row.addWidget(card)
             self.layout.addLayout(metric_row)
-        self.summary = label("")
+        self.summary = label(tr(""))
         self.layout.addWidget(self.summary)
-        self.improvement_summary = label("")
+        self.improvement_summary = label(tr(""))
         self.layout.addWidget(self.improvement_summary)
         self.table = table(
             [
@@ -91,9 +96,10 @@ class ProjectsPage(Page):
         for title, callback in [
             ("New Project", window.create_project),
             ("Open Project", self.open_selected),
+            ("기존 프로젝트 열기", window.open_existing_project),
             ("Refresh", window.refresh),
         ]:
-            button = QPushButton(title)
+            button = QPushButton(tr(title))
             button.clicked.connect(callback)
             actions.addWidget(button)
         self.layout.addLayout(actions)
@@ -106,10 +112,12 @@ class ProjectsPage(Page):
             state = self.window.service.get_improvement_overview()
             rules = self.window.service.list_improvement_rules()
             self.improvement_summary.setText(
-                f"Improvement Candidates: {sum(c.status == 'pending' for c in state.candidates)} · Active Rules: {sum(r.enabled for r in rules)}"
+                tr(
+                    f"개선 후보: {sum(c.status == 'pending' for c in state.candidates)} · 사용 중인 규칙: {sum(r.enabled for r in rules)}"
+                )
             )
             self.projects = view.recent_projects
-            for widget, value in zip(
+            for widget, metric_value in zip(
                 self.metrics,
                 (
                     view.total_projects,
@@ -119,26 +127,30 @@ class ProjectsPage(Page):
                 ),
                 strict=True,
             ):
-                widget.setText(str(value))
+                widget.setText(str(metric_value))
             self.summary.setText(
-                f"Provider: {view.provider.model} · Credential configured: {'Yes' if view.provider.credential_configured else 'No — configure in Settings'}"
+                tr(
+                    f"제공자: {view.provider.model} · API Key 설정: {('예' if view.provider.credential_configured else '없음 — 설정에서 입력하세요')}"
+                )
             )
         else:
             self.projects = self.window.service.list_projects()
             self.summary.setText(
-                f"{len(self.projects)} local projects"
-                if self.projects
-                else "No projects yet. Create a project to request a mode proposal."
+                tr(
+                    f"{len(self.projects)}개 프로젝트"
+                    if self.projects
+                    else "No projects yet. Create a project to request a mode proposal."
+                )
             )
         fill_table(
             self.table,
             [
                 (
                     p.display_title,
-                    p.work_mode,
-                    p.project_mode,
-                    p.status,
-                    ", ".join(a.title for a in p.pending_actions),
+                    value(p.work_mode),
+                    value(p.project_mode),
+                    value(p.status),
+                    ", ".join(value(a.action_type) for a in p.pending_actions),
                     p.created_at.astimezone().strftime("%Y-%m-%d %H:%M"),
                 )
                 for p in self.projects
@@ -168,16 +180,28 @@ class ProjectPage(Page):
         project_id = self.window.state.selected_project_id
         if not project_id:
             self.body.addWidget(
-                label("No project selected. Open a project from Projects.")
+                label(tr("No project selected. Open a project from Projects."))
             )
             return
         view = self.window.service.get_project_view(project_id)
         p = view.project
         self.body.addWidget(
             label(
-                f"{p.display_title}\n{p.project_id}\n{p.work_mode or 'Awaiting mode confirmation'} · {p.project_mode or '—'} · {p.status}\nArtifacts: {len(view.artifacts)}"
+                tr(
+                    f"{p.display_title}\n{p.project_id}\n{value(p.work_mode) if p.work_mode else tr('Awaiting mode confirmation')} · {value(p.project_mode)} · {value(p.status)}\n결과물: {len(view.artifacts)}"
+                )
             )
         )
+        self.body.addWidget(
+            label(
+                f"프로젝트 폴더: {p.workspace_root or '설정되지 않음(기존 Run 경로 유지)'}"
+            )
+        )
+        change = QPushButton("작업 폴더 변경")
+        change.setObjectName("changeProjectDirectory")
+        change.setEnabled(not p.developer_run_id and not self.window.busy)
+        change.clicked.connect(self.window.change_project_directory)
+        self.body.addWidget(change)
         for action in p.pending_actions:
             if action.domain == "project":
                 self.add_pending(self.body, action)
@@ -187,18 +211,20 @@ class ProjectPage(Page):
             if self.domain not in ("Project Detail", "Hybrid", name.title()):
                 continue
             lane = getattr(view, name)
-            box = QGroupBox(name.title())
+            box = QGroupBox(value(name))
             layout = QVBoxLayout(box)
             if lane is None or not lane.bound:
                 layout.addWidget(
                     label(
-                        "Lane not bound. Create a run, then explicitly bind its run ID."
+                        tr(
+                            "Lane not bound. Create a run, then explicitly bind its run ID."
+                        )
                     )
                 )
                 if lane is not None:
                     if lane.pending_action:
                         self.add_pending(layout, lane.pending_action)
-                    button = QPushButton(f"Create {name.title()} Run")
+                    button = QPushButton(tr(f"생성: {value(name)} 실행"))
                     button.clicked.connect(
                         lambda checked=False, n=name: self.window.create_run(n)
                     )
@@ -206,13 +232,17 @@ class ProjectPage(Page):
             else:
                 layout.addWidget(
                     label(
-                        f"Status: {lane.status}\nPhase: {lane.phase or '—'}\nRun: {lane.run_id}"
+                        tr(
+                            f"상태: {value(lane.status)}\n단계: {value(lane.phase) if name == 'researcher' else lane.phase or '—'}\n실행: {lane.run_id}"
+                        )
                     )
                 )
                 if name == "researcher":
                     layout.addWidget(
                         label(
-                            f"Direction: {lane.selected_direction or 'Not selected'}\nResults: {lane.result_state}\nSynthesis / materials: {lane.synthesis_state}\nResearch artifacts are view / copy only."
+                            tr(
+                                f"방향: {lane.selected_direction or tr('Not selected')}\n결과: {value(lane.result_state)}\n종합 / 자료: {value(lane.synthesis_state)}\n리서치 결과물은 조회와 복사만 가능합니다."
+                            )
                         )
                     )
                 from ai_agent_project.desktop_app.improvements import (
@@ -220,7 +250,7 @@ class ProjectPage(Page):
                     feedback_run,
                 )
 
-                evaluate = QPushButton("Evaluate Run")
+                evaluate = QPushButton(tr("Evaluate Run"))
                 evaluate.setObjectName(f"evaluate_{name}")
                 evaluate.clicked.connect(
                     lambda checked=False, n=name, r=lane.run_id: evaluate_run(
@@ -228,7 +258,7 @@ class ProjectPage(Page):
                     )
                 )
                 layout.addWidget(evaluate)
-                feedback = QPushButton("Give Feedback")
+                feedback = QPushButton(tr("Give Feedback"))
                 feedback.clicked.connect(
                     lambda checked=False, n=name, r=lane.run_id: feedback_run(
                         self.window, n, r
@@ -239,19 +269,33 @@ class ProjectPage(Page):
                     self.add_pending(layout, lane.pending_action)
                 layout.addWidget(
                     label(
-                        "Artifacts: "
-                        + (
-                            ", ".join(
-                                a.title
-                                for a in view.artifacts
-                                if a.source_domain == name
+                        tr(
+                            "결과물: "
+                            + (
+                                ", ".join(
+                                    artifact_title(a.title)
+                                    for a in view.artifacts
+                                    if a.source_domain == name
+                                )
+                                or "None"
                             )
-                            or "None"
                         )
                     )
                 )
             lane_layout.addWidget(box)
         self.body.addWidget(lanes)
+        if self.domain == "Developer" and view.developer and view.developer.bound:
+            from ai_agent_project.desktop_app.code_changes import CodeChangesPanel
+            from ai_agent_project.desktop_app.developer_workspace import (
+                DeveloperWorkspacePanel,
+            )
+            from ai_agent_project.desktop_app.execution_timeline import (
+                ExecutionTimelinePanel,
+            )
+
+            self.body.addWidget(ExecutionTimelinePanel(self.window, project_id))
+            self.body.addWidget(CodeChangesPanel(self.window, project_id))
+            self.body.addWidget(DeveloperWorkspacePanel(self.window, project_id))
         if self.domain in ("Hybrid", "Project Detail") and view.hybrid:
             self.render_handoffs(view)
 
@@ -261,27 +305,31 @@ class ProjectPage(Page):
         layout.addWidget(widget)
 
     def render_handoffs(self, view: DesktopProjectView) -> None:
-        box = QGroupBox("Research → Developer Handoffs")
+        box = QGroupBox(tr("Research → Developer Handoffs"))
         layout = QVBoxLayout(box)
         layout.addWidget(
             label(
-                "Select a Researcher artifact in Artifacts to create a context handoff."
+                tr(
+                    "Select a Researcher artifact in Artifacts to create a context handoff."
+                )
             )
         )
         for handoff in view.handoffs:
             layout.addWidget(
                 label(
-                    f"{handoff.artifact_type} · {handoff.purpose}\n{handoff.status} · {handoff.created_at.isoformat(timespec='minutes')}"
+                    tr(
+                        f"{value(handoff.artifact_type)} · {value(handoff.purpose)}\n{value(handoff.status)} · {handoff.created_at.isoformat(timespec='minutes')}"
+                    )
                 )
             )
-            button = QPushButton("Create Developer Run From Research")
+            button = QPushButton(tr("Create Developer Run From Research"))
             button.setEnabled(handoff.bootstrap_available)
             button.clicked.connect(
                 lambda checked=False, h=handoff.handoff_id: self.window.bootstrap(h)
             )
             layout.addWidget(button)
         if not view.handoffs:
-            layout.addWidget(label("No handoffs created."))
+            layout.addWidget(label(tr("No handoffs created.")))
         self.body.addWidget(box)
 
 
@@ -297,15 +345,15 @@ class ArtifactsPage(Page):
         splitter.addWidget(self.table)
         splitter.addWidget(self.preview)
         self.layout.addWidget(splitter)
-        copy = QPushButton("Copy Preview")
+        copy = QPushButton(tr("Copy Preview"))
         copy.clicked.connect(
             lambda: QApplication.clipboard().setText(self.preview.toPlainText())
         )
         self.layout.addWidget(copy)
-        export = QPushButton("Export JSON…")
+        export = QPushButton(tr("Export JSON…"))
         export.clicked.connect(self.export_selected)
         self.layout.addWidget(export)
-        self.handoff = QPushButton("Create Developer Context Handoff")
+        self.handoff = QPushButton(tr("Create Developer Context Handoff"))
         self.handoff.clicked.connect(self.create_handoff)
         self.layout.addWidget(self.handoff)
         self.table.currentCellChanged.connect(self.select_artifact)
@@ -318,8 +366,8 @@ class ArtifactsPage(Page):
             self.table,
             [
                 (
-                    f"{a.title}\n{a.artifact_type}",
-                    a.source_domain,
+                    f"{artifact_title(a.title)}\n{value(a.artifact_type)}",
+                    value(a.source_domain),
                     a.source_run_id,
                     a.source_version,
                     ", ".join(a.media_types),
@@ -331,9 +379,9 @@ class ArtifactsPage(Page):
         self.table.setCurrentCell(-1, -1)
         self.table.blockSignals(False)
         self.preview.setPlainText(
-            "Select an artifact to preview."
+            tr("Select an artifact to preview.")
             if pid
-            else "No project selected. Open a project from Projects."
+            else tr("No project selected. Open a project from Projects.")
         )
         self.handoff.setEnabled(False)
 
@@ -353,7 +401,7 @@ class ArtifactsPage(Page):
             )
         except Exception:  # noqa: BLE001 -- UI boundary never exposes raw errors
             self.window.show_error(
-                "Artifact preview unavailable. Refresh and try again."
+                tr("Artifact preview unavailable. Refresh and try again.")
             )
 
     def export_selected(self) -> None:
@@ -366,7 +414,7 @@ class ArtifactsPage(Page):
             return
         destination, _ = QFileDialog.getSaveFileName(
             self,
-            "Export to a new file (existing files are never overwritten)",
+            tr("Export to a new file (existing files are never overwritten)"),
             "artifact.json",
             "JSON (*.json)",
         )
@@ -391,7 +439,7 @@ class SettingsPage(Page):
         self.window = window
         form = QFormLayout()
         self.layout.addLayout(form)
-        form.addRow("Provider Type", label("OpenAI-compatible"))
+        form.addRow(tr("Provider Type"), label(tr("OpenAI-compatible")))
         self.url = QLineEdit()
         self.model = QLineEdit()
         self.timeout = QDoubleSpinBox()
@@ -399,7 +447,7 @@ class SettingsPage(Page):
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setPlaceholderText(
-            "Enter session API key; leave blank to retain current credential"
+            tr("Enter session API key; leave blank to retain current credential")
         )
         for name, field in [
             ("Base URL", self.url),
@@ -407,19 +455,21 @@ class SettingsPage(Page):
             ("Timeout (seconds)", self.timeout),
             ("API key", self.key),
         ]:
-            form.addRow(name, field)
-        self.credential = label("")
+            form.addRow(tr(name), field)
+        self.credential = label(tr(""))
         self.layout.addWidget(self.credential)
         self.layout.addWidget(
             label(
-                "API key is used for this application session and is not saved in the normal configuration file. OS credential storage is deferred."
+                tr(
+                    "API key is used for this application session and is not saved in the normal configuration file. OS credential storage is deferred."
+                )
             )
         )
         for title, callback in [
             ("Save Settings", lambda: self.apply(False)),
             ("Test Connection", lambda: self.apply(True)),
         ]:
-            button = QPushButton(title)
+            button = QPushButton(tr(title))
             button.clicked.connect(callback)
             self.layout.addWidget(button)
         self.layout.addStretch()
@@ -431,7 +481,7 @@ class SettingsPage(Page):
         self.timeout.setValue(config.timeout_seconds)
         self.key.clear()
         self.credential.setText(
-            f"Credential configured: {'Yes' if config.credential_configured else 'No'}"
+            tr(f"API Key 설정: {('예' if config.credential_configured else '아니요')}")
         )
 
     def apply(self, test) -> None:
@@ -445,7 +495,9 @@ class SettingsPage(Page):
                 api_key=self.key.text() or None,
             )
         except ValueError:
-            self.window.show_error("Check URL, model, timeout and credential input.")
+            self.window.show_error(
+                tr("Check URL, model, timeout and credential input.")
+            )
             return
         self.key.clear()
         if test:

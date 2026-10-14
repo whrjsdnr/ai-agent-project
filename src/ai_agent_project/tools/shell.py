@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from ai_agent_project.agent.execution_observation import observe_tool
 from ai_agent_project.command_policy import CommandPolicyError, parse_safe_command
 from ai_agent_project.tools.base import ToolDefinition, ToolResult
 from ai_agent_project.tools.file import FileTool
@@ -43,6 +44,7 @@ class ShellTool:
         if not self._workspace_root.is_dir():
             raise ValueError("workspace_root must be an existing directory")
 
+    @observe_tool("shell")
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         """Validate and execute an allowlisted command without a shell."""
         try:

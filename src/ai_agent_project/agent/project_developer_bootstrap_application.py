@@ -1,5 +1,7 @@
 """Explicit, planning-only bootstrap of a Developer run from a handoff."""
 
+from pathlib import Path
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from ai_agent_project.agent.plan_revision import PlanReviewStatus
@@ -76,6 +78,11 @@ class ProjectDeveloperBootstrapService:
             request,
             context=context,
             provenance=verified.to_provenance(),
+            **(
+                {"workspace_root": Path(project.workspace_root)}
+                if project.workspace_root
+                else {}
+            ),
         )
         run = stored.project_run
         if (

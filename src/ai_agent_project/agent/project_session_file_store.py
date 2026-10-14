@@ -2,6 +2,8 @@
 
 import json
 import os
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import UUID
@@ -29,6 +31,40 @@ class FileProjectStore:
         self._root.mkdir(parents=True, exist_ok=True)
         if not self._root.is_dir():
             raise ProjectSessionStorageError("Project store root is not a directory")
+
+    @contextmanager
+    def registration_guard(self):
+        try:
+            with exclusive_file_lock(self._root / "registration.lock"):
+                yield
+        except OSError:
+            raise ProjectSessionStorageError(
+                "Cannot lock project registration"
+            ) from None
+
+    def set_workspace_if_unbound(self, project_id: str, workspace_root: str) -> None:
+        from ai_agent_project.agent.project_session_application import (
+            ProjectSessionStateError,
+        )
+
+        path = self._path_for(project_id)
+        with exclusive_file_lock(path.with_suffix(".lock")):
+            project = self.get(project_id)
+            if project is None:
+                raise ProjectSessionNotFoundError("Project not found")
+            if project.developer_run_id is not None:
+                raise ProjectSessionStateError(
+                    "Workspace is fixed after Developer binding"
+                )
+            self.replace(
+                project_id,
+                project.model_copy(
+                    update={
+                        "workspace_root": workspace_root,
+                        "updated_at": datetime.now(UTC),
+                    }
+                ),
+            )
 
     def list_projects(self) -> tuple[ProjectSession, ...]:
         """Read snapshots only; lock and temporary files are not snapshots."""

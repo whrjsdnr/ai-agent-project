@@ -1,5 +1,6 @@
 """Application-layer storage and lifecycle operations for project runs."""
 
+from collections.abc import Callable
 from typing import Protocol
 from uuid import uuid4
 
@@ -7,6 +8,9 @@ from pydantic import BaseModel, ConfigDict
 
 from ai_agent_project.agent.checkpoint import CheckpointDecision
 from ai_agent_project.agent.developer_bootstrap_context import DeveloperBootstrapContext
+from ai_agent_project.agent.execution_event_store import FileExecutionEventStore
+from ai_agent_project.agent.execution_events import emit
+from ai_agent_project.agent.execution_runtime import observed_mutation, runtime_secrets
 from ai_agent_project.agent.plan_revision import (
     PlanReviewStatus,
     PlanRevisionState,
@@ -107,12 +111,17 @@ class ProjectApplicationService:
         store: ProjectRunStore,
         plan_reviser: ProjectPlanReviser | None = None,
         upgrade_runner: UpgradeProjectRunner | None = None,
+        *,
+        events: FileExecutionEventStore | None = None,
+        event_secrets: Callable[[], tuple[str, ...]] = runtime_secrets,
     ) -> None:
         self._project_runner = project_runner
         self._project_execution_service = project_execution_service
         self._store = store
         self._plan_reviser = plan_reviser
         self._upgrade_runner = upgrade_runner
+        self._events = events
+        self._event_secrets = event_secrets
 
     def create_project(
         self,
@@ -184,6 +193,7 @@ class ProjectApplicationService:
             project_run=self._require_project_run(project_run_id),
         )
 
+    @observed_mutation
     def execute_current_phase(self, project_run_id: str) -> StoredProjectRun:
         """Execute the current phase and replace only the stored state snapshot."""
         project_run = self._require_project_run(project_run_id)
@@ -201,6 +211,8 @@ class ProjectApplicationService:
         )
         updated_run = _with_execution_state(project_run, execution_state)
         self._store.replace(project_run_id, updated_run)
+        emit("phase_finished", "awaiting_checkpoint")
+        emit("checkpoint_created", "awaiting_checkpoint")
         return StoredProjectRun(id=project_run_id, project_run=updated_run)
 
     def get_plan(self, project_run_id: str) -> PlanRevisionState:
@@ -210,6 +222,7 @@ class ProjectApplicationService:
             raise ProjectPlanReviewError("Project run has no plan review state")
         return revision_state
 
+    @observed_mutation
     def revise_plan(self, project_run_id: str, feedback: str) -> StoredProjectRun:
         """Replace the active pre-execution phase grouping without changing tasks."""
         project_run = self._require_project_run(project_run_id)
@@ -249,6 +262,7 @@ class ProjectApplicationService:
         self._store.replace(project_run_id, updated_run)
         return StoredProjectRun(id=project_run_id, project_run=updated_run)
 
+    @observed_mutation
     def approve_plan(self, project_run_id: str) -> StoredProjectRun:
         """Approve the active plan and make its first phase ready without executing."""
         project_run = self._require_project_run(project_run_id)
@@ -270,8 +284,10 @@ class ProjectApplicationService:
             }
         )
         self._store.replace(project_run_id, updated_run)
+        emit("plan_approved", "approved")
         return StoredProjectRun(id=project_run_id, project_run=updated_run)
 
+    @observed_mutation
     def decide_current_phase(
         self,
         project_run_id: str,
@@ -289,6 +305,7 @@ class ProjectApplicationService:
         )
         updated_run = _with_execution_state(project_run, execution_state)
         self._store.replace(project_run_id, updated_run)
+        emit("checkpoint_decided", decision.value)
         return StoredProjectRun(id=project_run_id, project_run=updated_run)
 
     def _require_project_run(self, project_run_id: str) -> ProjectRun:

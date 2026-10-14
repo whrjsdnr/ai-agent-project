@@ -1,5 +1,6 @@
 """Application lifecycle for shallow user-confirmed project sessions."""
 
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Protocol
@@ -161,7 +162,11 @@ class ProjectSessionService:
         )
 
     def create_project_request(
-        self, original_request: str, *, title: str | None = None
+        self,
+        original_request: str,
+        *,
+        title: str | None = None,
+        workspace_root: str | None = None,
     ) -> StoredProjectSession:
         if not original_request.strip():
             raise ProjectSessionError("Project request must not be blank")
@@ -175,8 +180,25 @@ class ProjectSessionService:
             original_request=original_request,
             mode_proposal=proposal,
         )
+        project = ProjectSession.model_validate(
+            {**project.model_dump(), "workspace_root": workspace_root}
+        )
         self._store.create(project_id, project)
         return StoredProjectSession(id=project_id, project=project)
+
+    def registration_guard(self):
+        guard = getattr(self._store, "registration_guard", None)
+        return guard() if guard else nullcontext()
+
+    def set_project_workspace(self, project_id: str, workspace_root: str) -> None:
+        setter = getattr(self._store, "set_workspace_if_unbound", None)
+        if setter:
+            setter(project_id, workspace_root)
+            return
+        project = self._require(project_id)
+        if project.developer_run_id is not None:
+            raise ProjectSessionStateError("Workspace is fixed after Developer binding")
+        self._replace(project_id, project, workspace_root=workspace_root)
 
     def get_project(self, project_id: str) -> StoredProjectSession:
         return StoredProjectSession(id=project_id, project=self._require(project_id))

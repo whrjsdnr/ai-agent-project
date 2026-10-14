@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -85,6 +86,7 @@ class ProjectSession(BaseModel):
     project_mode: ProjectMode | None = None
     developer_run_id: str | None = None
     research_run_id: str | None = None
+    workspace_root: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -94,6 +96,15 @@ class ProjectSession(BaseModel):
     _validate_optional = field_validator("developer_run_id", "research_run_id")(
         _nonblank_optional
     )
+
+    @field_validator("workspace_root")
+    @classmethod
+    def absolute_workspace(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not Path(value).is_absolute() or ".." in Path(value).parts
+        ):
+            raise ValueError("Project workspace must be absolute without traversal")
+        return value
 
     @model_validator(mode="after")
     def validate_lifecycle(self) -> "ProjectSession":

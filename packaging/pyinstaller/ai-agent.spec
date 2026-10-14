@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+from PySide6.QtCore import QLibraryInfo
 import runpy
 import sys
 from importlib.metadata import distribution
@@ -23,7 +24,7 @@ a = Analysis(
     [str(root / "packaging/pyinstaller/entrypoint.py")],
     pathex=[str(root / "src")],
     binaries=[],
-    datas=[(str(root / "src/ai_agent_project/desktop_app/assets/ai-agent.svg"), "ai_agent_project/desktop_app/assets"),
+    datas=[(str(Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)) / "qtbase_ko.qm"), "ai_agent_project/desktop_app/assets"),(str(root / "src/ai_agent_project/desktop_app/assets/ai-agent.svg"), "ai_agent_project/desktop_app/assets"),
            (str(icon), "ai_agent_project/desktop_app/assets"),
            (str(metadata_path / "METADATA"), metadata_path.name)],
     hiddenimports=[],

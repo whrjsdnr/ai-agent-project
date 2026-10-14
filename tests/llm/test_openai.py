@@ -1,5 +1,6 @@
 """Tests for the OpenAI provider without making network requests."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -372,7 +373,12 @@ def test_openai_client_can_continue_with_previous_response_id() -> None:
     ]
 
 
-def test_openai_client_uses_environment_model(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_client_uses_environment_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Provider settings are user-scoped on both Linux and native Windows.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
     fake_client = FakeOpenAIAPIClient([SimpleNamespace(output=[], output_text="Hi")])
     monkeypatch.setenv("OPENAI_MODEL", "configured-model")
 

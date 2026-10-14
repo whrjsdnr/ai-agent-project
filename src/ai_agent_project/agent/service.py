@@ -1,5 +1,8 @@
 """A provider-neutral LLM and multi-step tool execution loop."""
 
+from uuid import uuid4
+
+from ai_agent_project.agent.execution_events import emit
 from ai_agent_project.agent.state import AgentMessage, AgentState, AgentStatus, ToolCall
 from ai_agent_project.llm.base import LLMClient
 from ai_agent_project.tools.base import ToolResult
@@ -30,6 +33,7 @@ class AgentService:
     def run(self, user_message: str) -> AgentState:
         """Process a user message until the LLM returns a final answer."""
         state = AgentState(messages=[AgentMessage(role="user", content=user_message)])
+        emit("agent_started", "running", source="agent")
 
         try:
             while state.iteration_count < self._max_iterations:
@@ -58,6 +62,7 @@ class AgentService:
                     )
                     state.final_answer = response.final_answer
                     state.status = AgentStatus.COMPLETED
+                    emit("agent_completed", "completed", source="agent")
                     return state
 
                 raise ValueError(
@@ -71,6 +76,7 @@ class AgentService:
         except Exception as error:  # noqa: BLE001 - Agent runs must record all failures.
             state.status = AgentStatus.FAILED
             state.error = str(error)
+            emit("agent_failed", "failed", source="agent", error="execution_failed")
             return state
 
     def _execute_tool_calls(
@@ -115,5 +121,21 @@ class AgentService:
         try:
             tool = self._tool_registry.get(tool_name)
         except ToolNotFoundError as error:
+            operation_id = str(uuid4())
+            emit(
+                "tool_started",
+                "running",
+                source="tool",
+                tool="unknown",
+                operation_id=operation_id,
+            )
+            emit(
+                "tool_failed",
+                "failed",
+                source="tool",
+                tool="unknown",
+                error="tool_failed",
+                operation_id=operation_id,
+            )
             return ToolResult(success=False, error=str(error))
         return tool.execute(arguments)

@@ -1,12 +1,26 @@
 """Synchronous facade composed from application services; no workflow engine.
 
 Construct with the same services/readers used by the local application. Reads
-only inspect snapshots. Mutations invoke one explicitly named application command.
+inspect snapshots and safe workspace files. Mutations invoke one explicitly named
+application command.
 """
 
 from pathlib import Path
+from typing import Literal
 
 from ai_agent_project.agent.checkpoint import CheckpointDecision
+from ai_agent_project.agent.code_snapshot import (
+    CodeChangesView,
+    SnapshotError,
+    SnapshotSummary,
+    compare_snapshots,
+)
+from ai_agent_project.agent.execution_event_store import FileExecutionEventStore
+from ai_agent_project.agent.execution_events import PublicExecutionEvent
+from ai_agent_project.agent.execution_recovery import (
+    ExecutionRecovery,
+    inspect_recovery,
+)
 from ai_agent_project.agent.hybrid_coordination_application import (
     HybridCoordinationService,
 )
@@ -34,6 +48,7 @@ from ai_agent_project.agent.project_handoff import (
     ProjectHandoffPurpose,
 )
 from ai_agent_project.agent.project_handoff_application import ProjectHandoffService
+from ai_agent_project.agent.project_runner import ProjectRun
 from ai_agent_project.agent.project_session import ProjectPendingAction, ProjectSession
 from ai_agent_project.agent.project_session_application import (
     DeveloperRunReader,
@@ -53,6 +68,7 @@ from ai_agent_project.desktop.models import (
     DesktopConnectionView,
     DesktopDashboardView,
     DesktopDirectionView,
+    DesktopExecutionView,
     DesktopHandoffSummary,
     DesktopHybridView,
     DesktopLaneView,
@@ -60,6 +76,17 @@ from ai_agent_project.desktop.models import (
     DesktopProjectSummary,
     DesktopProjectView,
     DesktopProviderView,
+    DesktopWorkspaceCode,
+    DesktopWorkspaceFile,
+    DesktopWorkspaceView,
+)
+from ai_agent_project.desktop.workspace import (
+    MAX_FILES,
+    checked_file,
+    checked_root,
+    inventory,
+    public_path,
+    read_code,
 )
 from ai_agent_project.llm.config import ProviderConfig, ProviderConfigService
 
@@ -109,6 +136,7 @@ class DesktopService:
         improvements=None,
         developer_application=None,
         research_application=None,
+        events: FileExecutionEventStore | None = None,
     ) -> None:
         from ai_agent_project.improvement.service import build_improvement_service
 
@@ -128,11 +156,215 @@ class DesktopService:
         self._bootstrap = bootstrap
         self._developer_application = developer_application
         self._research_application = research_application
+        self._events = events
+
+    @desktop_boundary
+    def get_developer_events(
+        self,
+        project_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 200,
+    ) -> tuple[PublicExecutionEvent, ...]:
+        run_id, _, _ = self._workspace_run(project_id)
+        if self._events is None:
+            return ()
+        return self._events.query(run_id, after_sequence=after_sequence, limit=limit)
+
+    @desktop_boundary
+    def get_developer_last_event(self, project_id: str) -> PublicExecutionEvent | None:
+        run_id, _, _ = self._workspace_run(project_id)
+        return self._events.latest(run_id) if self._events else None
+
+    @desktop_boundary
+    def get_developer_execution_view(self, project_id: str) -> DesktopExecutionView:
+        run_id, run, _ = self._workspace_run(project_id)
+        return DesktopExecutionView(
+            run_id=run_id,
+            current_phase=run.execution_state.current_phase_id,
+            workflow_status=run.execution_state.status.value,
+            last_phase_event=self._events.latest_phase(run_id)
+            if self._events
+            else None,
+            last_event=self._events.latest(run_id) if self._events else None,
+        )
+
+    @desktop_boundary
+    def get_developer_recovery(self, project_id: str) -> ExecutionRecovery:
+        run_id, _, _ = self._workspace_run(project_id)
+        return inspect_recovery(self._events, run_id)
+
+    @desktop_boundary
+    def list_developer_snapshots(
+        self, project_id: str, *, before_sequence: int | None = None
+    ) -> tuple[SnapshotSummary, ...]:
+        run_id, _, _ = self._workspace_run(project_id)
+        return (
+            self._events.list_snapshots(run_id, before_sequence=before_sequence)
+            if self._events
+            else ()
+        )
+
+    @desktop_boundary
+    def get_developer_code_changes(
+        self,
+        project_id: str,
+        *,
+        after_snapshot_id: str | None = None,
+        before_snapshot_id: str | None = None,
+        comparison: Literal["baseline", "previous"] = "baseline",
+    ) -> CodeChangesView:
+        run_id, _, _ = self._workspace_run(project_id)
+        if self._events is None:
+            return compare_snapshots(None, None)
+        if after_snapshot_id is None:
+            latest = self._events.list_snapshots(run_id, limit=1)
+            candidate = latest[0] if latest else None
+            if candidate is None:
+                return compare_snapshots(None, None)
+            after_snapshot_id = candidate.snapshot_id
+        after = self._events.get_snapshot(run_id, after_snapshot_id)
+        if after is None:
+            raise DesktopError(
+                DesktopErrorCode.NOT_FOUND,
+                "Snapshot does not belong to this project's Developer run.",
+            )
+        if after.stage == "before":
+            return compare_snapshots(after, None)
+        before = (
+            self._events.get_snapshot(run_id, before_snapshot_id)
+            if before_snapshot_id
+            else self._events.previous_snapshot(run_id, after)
+            if comparison == "previous"
+            else self._events.attempt_snapshot(run_id, after.attempt_id, baseline=True)
+        )
+        if before_snapshot_id and before is None:
+            raise DesktopError(
+                DesktopErrorCode.NOT_FOUND,
+                "Snapshot does not belong to this project's Developer run.",
+            )
+        if before and (
+            before.attempt_id != after.attempt_id or before.sequence >= after.sequence
+        ):
+            raise SnapshotError(
+                "Comparison must remain within one ordered execution attempt"
+            )
+        return compare_snapshots(before, after)
+
+    def _workspace_run(self, project_id: str) -> tuple[str, ProjectRun, Path]:
+        project = self._sessions.get_project(project_id).project
+        if (
+            project.work_mode not in {WorkMode.DEVELOPER, WorkMode.HYBRID}
+            or not project.developer_run_id
+        ):
+            raise DesktopError(
+                DesktopErrorCode.ACTION_NOT_ALLOWED,
+                "No Developer workspace is bound to this project.",
+            )
+        run = self._developers.get(project.developer_run_id)
+        if run is None:
+            raise DesktopError(
+                DesktopErrorCode.NOT_FOUND, "Developer run was not found."
+            )
+        reader = getattr(self._developers, "workspace_root_for", None)
+        if reader is None:
+            raise DesktopError(
+                DesktopErrorCode.CONFIGURATION_ERROR,
+                "This run has no saved workspace path.",
+            )
+        root = reader(project.developer_run_id)
+        return project.developer_run_id, run, root
+
+    @desktop_boundary
+    def get_developer_workspace(self, project_id: str) -> DesktopWorkspaceView:
+        run_id, run, root = self._workspace_run(project_id)
+        try:
+            exists = checked_root(root)
+            actual, truncated = inventory(root) if exists else ([], False)
+            planned: set[str] = set()
+            for task in run.implementation_plan.tasks:
+                for value in (*task.files, *task.files_to_modify):
+                    try:
+                        planned.add(public_path(value).as_posix())
+                    except DesktopError:
+                        continue
+            paths = sorted(set(actual) | planned)
+            files = []
+            for value in paths[:MAX_FILES]:
+                try:
+                    present = exists and checked_file(root, value).is_file()
+                except DesktopError:
+                    continue
+                files.append(
+                    DesktopWorkspaceFile(
+                        path=value, exists=present, planned=value in planned
+                    )
+                )
+            return DesktopWorkspaceView(
+                run_id=run_id,
+                absolute_path=str(root),
+                exists=exists,
+                plan_status=run.plan_revision_state.status.value,
+                files=tuple(files),
+                truncated=truncated or len(paths) > MAX_FILES,
+            )
+        except OSError:
+            raise DesktopError(
+                DesktopErrorCode.NOT_FOUND,
+                "Workspace could not be inspected. Refresh and check that it is accessible.",
+            ) from None
+
+    @desktop_boundary
+    def get_developer_workspace_code(
+        self, project_id: str, path: str
+    ) -> DesktopWorkspaceCode:
+        _, _, root = self._workspace_run(project_id)
+        try:
+            if not checked_root(root) or not checked_file(root, path).is_file():
+                return DesktopWorkspaceCode(
+                    path=public_path(path).as_posix(),
+                    exists=False,
+                    content="",
+                    message="No saved file exists at this workspace path.",
+                )
+            credential = self._provider.resolve().api_key
+            secrets = (credential.get_secret_value(),) if credential else ()
+            return DesktopWorkspaceCode(
+                path=public_path(path).as_posix(),
+                exists=True,
+                content=read_code(root, path, secrets=secrets),
+                message="Current disk content. Sensitive lines are masked; this is not proof of creation by this run.",
+            )
+        except (OSError, UnicodeError):
+            raise DesktopError(
+                DesktopErrorCode.ACTION_NOT_ALLOWED,
+                "File is unavailable or cannot be displayed as UTF-8 code.",
+            ) from None
+
+    @desktop_boundary
+    def get_developer_workspace_folder(self, project_id: str) -> Path:
+        _, _, root = self._workspace_run(project_id)
+        try:
+            if not checked_root(root):
+                raise DesktopError(
+                    DesktopErrorCode.NOT_FOUND, "Workspace folder does not exist."
+                )
+        except OSError:
+            raise DesktopError(
+                DesktopErrorCode.NOT_FOUND, "Workspace folder is unavailable."
+            ) from None
+        return root
 
     def _summary(self, project: ProjectSession) -> DesktopProjectSummary:
         return DesktopProjectSummary(
             project_id=project.project_id,
             display_title=project.title,
+            workspace_root=(
+                str(self._developers.workspace_root_for(project.developer_run_id))
+                if project.developer_run_id
+                and hasattr(self._developers, "workspace_root_for")
+                else project.workspace_root
+            ),
             status=project.status,
             work_mode=project.work_mode,
             project_mode=project.project_mode,
@@ -326,9 +558,94 @@ class DesktopService:
         result = self._provider.test_connection(config)
         return DesktopConnectionView(success=result.success, message=result.message)
 
+    def _reject_storage_overlap(self, directory: Path) -> None:
+        roots = (
+            getattr(self._developers, "_root", None),
+            getattr(self._researchers, "_root", None),
+            getattr(self._sessions._store, "_root", None),
+            getattr(self._handoffs._store, "_root", None),
+            getattr(self._events, "root", None),
+            getattr(self._improvements.store, "root", None),
+            self._provider.path.parent,
+        )
+        if any(
+            isinstance(root, Path)
+            and (directory.is_relative_to(root) or root.is_relative_to(directory))
+            for root in roots
+        ):
+            raise DesktopError(
+                DesktopErrorCode.VALIDATION_ERROR,
+                "프로그램의 기록·설정 저장소를 작업 폴더로 사용할 수 없습니다. 별도 소스코드 폴더를 선택하세요.",
+            )
+
     @desktop_boundary
-    def create_project(self, request: str, *, title: str | None = None) -> str:
-        return self._sessions.create_project_request(request, title=title).id
+    def create_project(
+        self,
+        request: str,
+        *,
+        title: str | None = None,
+        parent_directory: Path | None = None,
+        folder_name: str | None = None,
+    ) -> str:
+        with self._sessions.registration_guard():
+            from ai_agent_project.desktop.project_directory import create_directory
+
+            if parent_directory is None and folder_name is None:
+                return self._sessions.create_project_request(request, title=title).id
+            if parent_directory is None or folder_name is None:
+                raise DesktopError(
+                    DesktopErrorCode.VALIDATION_ERROR,
+                    "상위 폴더와 프로젝트 폴더명을 입력하세요.",
+                )
+            self._reject_storage_overlap(parent_directory / folder_name)
+            folder = create_directory(parent_directory, folder_name)
+            return self._sessions.create_project_request(
+                request, title=title, workspace_root=str(folder)
+            ).id
+
+    @desktop_boundary
+    def find_project_directory(self, directory: Path) -> str | None:
+        from ai_agent_project.desktop.project_directory import checked_directory
+
+        directory = checked_directory(directory)
+        for stored in self._sessions.list_projects():
+            project = stored.project
+            path = project.workspace_root
+            if project.developer_run_id and hasattr(
+                self._developers, "workspace_root_for"
+            ):
+                path = str(
+                    self._developers.workspace_root_for(project.developer_run_id)
+                )
+            if path and Path(path) == directory:
+                return project.project_id
+        return None
+
+    @desktop_boundary
+    def open_existing_project(
+        self, directory: Path, request: str, *, title: str | None = None
+    ) -> str:
+        with self._sessions.registration_guard():
+            from ai_agent_project.desktop.project_directory import checked_directory
+
+            directory = checked_directory(directory)
+            existing = self.find_project_directory(directory)
+            if existing:
+                return existing
+            self._reject_storage_overlap(directory)
+            return self._sessions.create_project_request(
+                request, title=title or directory.name, workspace_root=str(directory)
+            ).id
+
+    @desktop_boundary
+    def set_project_workspace(self, project_id: str, directory: Path) -> None:
+        with self._sessions.registration_guard():
+            from ai_agent_project.desktop.project_directory import checked_directory
+
+            self._reject_storage_overlap(directory)
+            self._sessions.set_project_workspace(
+                project_id, str(checked_directory(directory))
+            )
 
     @desktop_boundary
     def confirm_project_mode(
@@ -338,7 +655,19 @@ class DesktopService:
 
     @desktop_boundary
     def bind_developer_run(self, project_id: str, run_id: str) -> None:
-        self._sessions.bind_developer_run(project_id, run_id)
+        with self._sessions.registration_guard():
+            project = self._sessions.get_project(project_id).project
+            if (
+                project.workspace_root
+                and hasattr(self._developers, "workspace_root_for")
+                and Path(project.workspace_root)
+                != self._developers.workspace_root_for(run_id)
+            ):
+                raise DesktopError(
+                    DesktopErrorCode.VALIDATION_ERROR,
+                    "실행의 작업 폴더와 프로젝트 폴더가 다릅니다. 기존 Run 경로는 변경할 수 없습니다.",
+                )
+            self._sessions.bind_developer_run(project_id, run_id)
 
     @desktop_boundary
     def bind_research_run(self, project_id: str, run_id: str) -> None:
@@ -411,40 +740,53 @@ class DesktopService:
     def bootstrap_developer_from_handoff(
         self, project_id: str, handoff_id: str, request: str
     ) -> str:
-        if self._bootstrap is None:
-            raise DesktopError(
-                DesktopErrorCode.CONFIGURATION_ERROR,
-                "Developer bootstrap service is not configured.",
-            )
-        from ai_agent_project.improvement.context import project_context
+        with self._sessions.registration_guard():
+            if self._bootstrap is None:
+                raise DesktopError(
+                    DesktopErrorCode.CONFIGURATION_ERROR,
+                    "Developer bootstrap service is not configured.",
+                )
+            from ai_agent_project.improvement.context import project_context
 
-        with project_context(project_id):
-            return self._bootstrap.bootstrap(
-                project_id, handoff_id, request
-            ).developer_run_id
+            project = self._sessions.get_project(project_id).project
+            if project.workspace_root:
+                from ai_agent_project.desktop.project_directory import checked_directory
+
+                checked_directory(Path(project.workspace_root))
+            with project_context(project_id):
+                return self._bootstrap.bootstrap(
+                    project_id, handoff_id, request
+                ).developer_run_id
 
     @desktop_boundary
     def create_developer_run(self, project_id: str) -> str:
         """Create only; binding is a separate explicit command."""
-        project = self._sessions.get_project(project_id).project
-        if self._developer_application is None or project.work_mode not in {
-            WorkMode.DEVELOPER,
-            WorkMode.HYBRID,
-        }:
-            raise DesktopError(
-                DesktopErrorCode.INVALID_STATE,
-                "Confirm a Developer or Hybrid mode first.",
-            )
-        from ai_agent_project.improvement.context import project_context
+        with self._sessions.registration_guard():
+            project = self._sessions.get_project(project_id).project
+            if self._developer_application is None or project.work_mode not in {
+                WorkMode.DEVELOPER,
+                WorkMode.HYBRID,
+            }:
+                raise DesktopError(
+                    DesktopErrorCode.INVALID_STATE,
+                    "Confirm a Developer or Hybrid mode first.",
+                )
+            from ai_agent_project.desktop.project_directory import checked_directory
+            from ai_agent_project.improvement.context import project_context
 
-        with project_context(project_id):
-            if project.project_mode == ProjectMode.UPGRADE:
-                return self._developer_application.create_upgrade_project(
-                    project.original_request
+            workspace_args = (
+                {"workspace_root": checked_directory(Path(project.workspace_root))}
+                if project.workspace_root
+                else {}
+            )
+            with project_context(project_id):
+                if project.project_mode == ProjectMode.UPGRADE:
+                    return self._developer_application.create_upgrade_project(
+                        project.original_request, **workspace_args
+                    ).id
+                return self._developer_application.create_project(
+                    project.original_request, **workspace_args
                 ).id
-            return self._developer_application.create_project(
-                project.original_request
-            ).id
 
     @desktop_boundary
     def create_research_run(self, project_id: str) -> str:

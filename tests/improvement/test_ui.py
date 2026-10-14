@@ -47,7 +47,8 @@ def test_gui_explicit_evaluate_approve_disable_restart(env, window):
     button = win.pages["Developer"].findChild(QPushButton, "evaluate_developer")
     assert button is not None
     button.click()
-    assert win.busy and not win.centralWidget().isEnabled()
+    assert win.busy and win.centralWidget().isEnabled()
+    assert not button.isEnabled()
     finish(win, app)
     assert len(env.evaluator.calls) == 1
     assert win.state.current_page == "Improvements"
@@ -61,7 +62,7 @@ def test_gui_explicit_evaluate_approve_disable_restart(env, window):
     assert len(env.service.list_rules()) == 1 and len(env.evaluator.calls) == 1
     page.tabs.setCurrentIndex(1)
     page.tables["Approved Rules"].setCurrentCell(0, 0)
-    assert "Observed usage" in page.preview.toPlainText()
+    assert "관측된 사용" in page.preview.toPlainText()
     page.buttons["Disable Rule"].click()
     finish(win, app)
     assert not env.service.list_rules()[0].enabled

@@ -60,7 +60,7 @@ def test_window_and_empty_pages(qapp, tmp_path):
         assert window.stack.currentIndex() == window.page_indices[name]
     for name in ("Developer", "Researcher", "Hybrid"):
         window.navigate(name)
-        assert "No project selected" in texts(window.pages[name])
+        assert "선택한 프로젝트가 없습니다" in texts(window.pages[name])
     assert window.close()
 
 
@@ -82,7 +82,7 @@ def test_phase6c_acceptance(qapp, setup, monkeypatch):
         window.select_project(setup.ids[mode])
         window.navigate(mode.value.title())
         assert window.pages[mode.value.title()].findChild(QPushButton, action)
-    assert "Developer" in [
+    assert "개발 에이전트" in [
         g.title()
         for g in window.pages["Hybrid"].findChildren(
             __import__("PySide6.QtWidgets", fromlist=["QGroupBox"]).QGroupBox
@@ -100,7 +100,7 @@ def test_phase6c_acceptance(qapp, setup, monkeypatch):
         ).content
     )
     window.navigate("Settings")
-    assert "Credential configured: No" in texts(window.pages["Settings"])
+    assert "API Key 설정: 아니요" in texts(window.pages["Settings"])
     before = setup.snapshot()
     for _ in range(3):
         for name in window.NAVIGATION:
@@ -117,7 +117,12 @@ def test_phase6c_acceptance(qapp, setup, monkeypatch):
     window.navigate("Hybrid")
     window.pages["Hybrid"].findChild(QPushButton, "approve_developer_plan").click()
     assert window.busy
-    assert not window.centralWidget().isEnabled()
+    assert window.centralWidget().isEnabled()
+    assert (
+        not window.pages["Hybrid"]
+        .findChild(QPushButton, "approve_developer_plan")
+        .isEnabled()
+    )
     wait_for_operation(qapp, window)
     spy.assert_called_once_with(pid)
     after = setup.snapshot()
@@ -148,7 +153,7 @@ def test_direction_requires_choice(qapp, setup):
     dialog.choices.setCurrentRow(0)
     assert dialog.confirm.isEnabled()
     assert dialog.direction_id == directions[0].direction_id
-    assert dialog.confirm.text() == "Select Direction"
+    assert dialog.confirm.text() == "방향 선택"
 
 
 def test_direction_one_action(qapp, setup, monkeypatch):
@@ -262,14 +267,14 @@ def test_settings_secrets_and_connection(qapp, tmp_path, monkeypatch):
     assert settings.key.echoMode() == QLineEdit.EchoMode.Password
     assert settings.key.text() == ""
     assert secret not in texts(window)
-    assert "Credential configured: Yes" in texts(settings)
+    assert "API Key 설정: 예" in texts(settings)
     monkeypatch.setattr(
         "ai_agent_project.llm.runtime.build_openai_client",
         Mock(side_effect=RuntimeError(secret)),
     )
     settings.apply(True)
     wait_for_operation(qapp, window)
-    assert "Failure:" in window.statusBar().currentMessage()
+    assert "실패:" in window.statusBar().currentMessage()
     assert secret not in window.statusBar().currentMessage()
     assert secret not in repr(ProviderConfig(api_key=secret))
     assert secret not in str(ProviderConfig(api_key=secret))
@@ -426,7 +431,7 @@ def test_real_handoff_and_bootstrap_remain_separate(
     button = next(
         b
         for b in window.pages["Hybrid"].findChildren(QPushButton)
-        if b.text() == "Create Developer Run From Research"
+        if b.text() == "리서치 자료로 개발 실행 만들기"
     )
     assert button.isEnabled()
 
@@ -511,6 +516,8 @@ def test_mode_proposal_and_confirmation_separate(qapp, setup, monkeypatch):
 
     def accept_create(dialog):
         dialog.title.setText("Created in UI")
+        dialog.parent_directory.setText(str(setup.root))
+        dialog.folder_name.setText("created-in-ui")
         dialog.request.setPlainText("Build and research")
         return QDialog.DialogCode.Accepted
 

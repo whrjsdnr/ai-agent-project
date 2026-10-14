@@ -169,7 +169,11 @@ def test_data_allowlist():
         and node.func.id == "Analysis"
     )
     datas = next(k.value for k in analysis.keywords if k.arg == "datas")
-    assert len(datas.elts) == 3
+    assert len(datas.elts) == 4
+    assert any(
+        isinstance(node, ast.Constant) and node.value == "qtbase_ko.qm"
+        for node in ast.walk(datas)
+    )
     assert any(
         isinstance(node, ast.Constant) and node.value == "METADATA"
         for node in ast.walk(datas)

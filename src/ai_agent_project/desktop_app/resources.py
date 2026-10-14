@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def resource_path(name: str) -> Path:
-    if name not in {"ai-agent.svg", "ai-agent.ico"}:
+    if name not in {"ai-agent.svg", "ai-agent.ico", "qtbase_ko.qm"}:
         raise ValueError("Unknown application resource")
     # PyInstaller preserves __file__ relative to its bundle root.
     return Path(__file__).resolve().parent / "assets" / name

@@ -11,6 +11,7 @@ from ai_agent_project.agent.coding_service import (
     build_coding_instruction,
     build_repair_instruction,
 )
+from ai_agent_project.agent.execution_events import emit, execution_stage
 from ai_agent_project.agent.plan import ImplementationPlan, ImplementationTask
 from ai_agent_project.agent.project import (
     ProjectPhase,
@@ -106,12 +107,14 @@ class PhaseExecutionService:
                 acceptance_report,
                 attempt,
             )
-            agent_run = self._agent_service.run(
-                _phase_prefix(phase) + "\n\n" + repair_instruction
-            )
-            acceptance_report = self._validate(
-                scoped_specification, scoped_plan, agent_run, workspace_before
-            )
+            with execution_stage(repair_attempt=attempt):
+                emit("repair_started", "running")
+                agent_run = self._agent_service.run(
+                    _phase_prefix(phase) + "\n\n" + repair_instruction
+                )
+                acceptance_report = self._validate(
+                    scoped_specification, scoped_plan, agent_run, workspace_before
+                )
             repair_attempts.append(
                 RepairAttempt(
                     attempt=attempt,
@@ -139,11 +142,25 @@ class PhaseExecutionService:
         agent_run: AgentState,
         workspace_before: object | None = None,
     ) -> AcceptanceReport:
-        if workspace_before is not None:
-            return self._acceptance_validator.validate(  # type: ignore[call-arg]
-                specification, plan, agent_run, workspace_before=workspace_before
-            )
-        return self._acceptance_validator.validate(specification, plan, agent_run)
+        with execution_stage(source="validation"):
+            emit("validation_started", "running")
+            try:
+                if workspace_before is not None:
+                    report = self._acceptance_validator.validate(  # type: ignore[call-arg]
+                        specification,
+                        plan,
+                        agent_run,
+                        workspace_before=workspace_before,
+                    )
+                else:
+                    report = self._acceptance_validator.validate(
+                        specification, plan, agent_run
+                    )
+            except Exception:
+                emit("validation_failed", "failed", error="validation_failed")
+                raise
+            emit("validation_finished", report.status.value)
+            return report
 
 
 def _capture_workspace_state(validator: AcceptanceValidator) -> object | None:
